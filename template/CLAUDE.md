@@ -1,0 +1,68 @@
+# Working agreement — {{PROJECT_NAME}} Project Hub
+
+<!-- TEMPLATE: The operating contract for any agent working in this hub. Keep it SHORT and
+     CONCRETE — rules an agent can actually follow and you could test. Delete sections that
+     don't apply (e.g. the linked-repos section for a single-repo project). Remove these
+     TEMPLATE comments as you fill it in. -->
+
+This repo is the **cockpit** for {{PROJECT_NAME}}. It holds the docs and controls; the
+product code lives in the linked repos under `repos/`. Read [`CONTEXT.md`](CONTEXT.md) for
+the language before doing anything.
+
+## The repos under `repos/` are live working copies
+
+<!-- TEMPLATE: DELETE this whole section for a single-repo project. -->
+
+`repos/<name>` is a **symlink to the real clone** in `{{CLONE_WORKSPACE}}`. Editing a file
+there edits that working copy **on whatever branch it currently has checked out**.
+
+- Run `make status` first — know each repo's branch and dirty state before you touch it.
+- Don't switch branches or stash in a linked repo without saying so; the user may have
+  in-flight work there (feature branches, uncommitted changes).
+- These are separate git repos. Commit/push happens **inside** `repos/<name>`, against
+  `{{ORG}}/<name>` — not from the hub. The hub commits only its own docs/tooling.
+
+## Invariants (don't break these)
+
+<!-- TEMPLATE: The 2–6 hard rules specific to THIS project — the ones that, if violated,
+     cause real damage or rework. Make each concrete and checkable. Examples of the *shape*
+     (replace entirely): a naming/isolation rule, a security boundary, a "never touch X",
+     a routing/deploy rule. Link each to its ADR where one exists. -->
+
+- **{{Invariant 1}}** ({{ADR-000X}}): {{the rule, stated concretely, with the exact
+  boundary — what's forbidden and what's explicitly exempt.}}
+- **{{Invariant 2}}**: {{rule.}}
+- **{{Invariant 3}}**: {{rule.}}
+
+## PR / CI discipline
+
+After any push or PR, **always** check CI and don't call it done until green:
+
+```
+gh pr view <number> --repo {{ORG}}/<repo> --json statusCheckRollup
+```
+
+- CI running → wait and recheck. CI failed → read logs, fix, push, wait for green.
+- **Always paste the full PR URL** (`https://github.com/{{ORG}}/<repo>/pull/<n>`), not just
+  the number, so it's clickable.
+
+## Verification
+
+Run what you build before reporting it done. Type-checks and tests verify code correctness,
+not feature correctness — if you can't run it, say so explicitly rather than claiming
+success. <!-- TEMPLATE: add project-specific dry-run guidance, e.g. for infra prefer
+`terraform plan` / `helm template` / `kubectl --dry-run` over asserting an outcome. -->
+
+## Issue lifecycle
+
+<!-- TEMPLATE: adjust to where the backlog actually lives. -->
+
+Backlog is {{GitHub Issues / Jira / docs/tracker.md}}. **Don't close an issue when its PR
+merges** — mark it `status:merged`, then close only after a human verifies it in prod. See
+[`docs/issue-lifecycle.md`](docs/issue-lifecycle.md).
+
+## Keeping docs honest
+
+If you hit a factual error here (stale path, wrong command, a status that's moved), fix it
+in the same change — especially [`docs/tracker.md`](docs/tracker.md), which is only useful
+if it's current. Don't open cosmetic/rewording PRs.

@@ -1,0 +1,15 @@
+# Repos this hub coordinates. One per line; `make repos` reads this file.
+#
+# Format:  canonical:clone_dir:github_repo:kind
+#   canonical    — name under ./repos (what you cd into from the hub)
+#   clone_dir    — directory name inside the clone workspace (may differ from canonical)
+#   github_repo  — repo name to clone if clone_dir is missing (under $HUB_ORG)
+#   kind         — informational tag (service|infra|web|lib|gitops|…)
+#
+# Lines starting with # and blank lines are ignored.
+#
+# TEMPLATE: replace the examples below with the project's real repos. For a single-repo
+# project, delete this file (and scripts/repos.sh + the Makefile repo targets).
+
+{{repo-a}}:{{repo-a}}:{{repo-a}}:service
+{{repo-b}}:{{clone-dir-b}}:{{repo-b}}:web

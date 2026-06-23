@@ -1,0 +1,11 @@
+# The real repo clones live in the workspace ({{CLONE_WORKSPACE}}).
+# ./repos holds only symlinks into it, recreated by `make repos` — never tracked.
+/repos/
+
+# Machine-local Claude Code overrides. The shared settings.json and the hook ARE
+# tracked (so everyone gets the safety gate); only the local override is ignored.
+.claude/settings.local.json
+
+.DS_Store
+*.log
+*.tmp
