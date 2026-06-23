@@ -75,6 +75,9 @@ invariants, the ADRs, and the safety hook.
   exactly what the agent will do.
 - [`template/`](template/) — the hub skeleton (placeholders + inline guidance) that gets
   copied and customized into your new hub.
+- [`scripts/verify-hub.sh`](scripts/verify-hub.sh) — run it against a generated hub to catch
+  leftover placeholders, broken internal links, and a non-executable safety hook before
+  calling setup done.
 
 ## Why it works
 
