@@ -56,11 +56,34 @@ git clone <this-repo-url> /tmp/project-hub-template
 
 ---
 
+## 1.5 Inspect the project *before* you interview
+
+The fastest, least annoying setup comes from reading first and asking second. Before §2,
+find the project's actual code and mine it — a single sibling repo, the repos in the org
+the user named, or the repo they linked. Pull defaults from:
+
+- **`hugo.toml` / `package.json` / `Cargo.toml` / `go.mod` / `*.tf`** — name, language, stack.
+- **An existing `CONTEXT.md`, `CLAUDE.md`, `README.md`, `docs/adr/`, `backlog.md`** — the
+  project may *already* have a glossary, invariants, decisions, and a backlog. Read them.
+- **`git log` / `git remote`** — recent direction, the real org/owner, what's in flight.
+
+Come to the interview with **proposed answers**, not blank questions ("I see this is a Hugo
+site called X with these two ADRs — single-repo, yes?"). This is what turns a long
+interrogation into a quick confirmation.
+
+> **If the code repo already has these docs, do not blindly duplicate them.** A second,
+> parallel `CONTEXT.md` / ADR set in the hub will drift from the original. For each, decide
+> and say which: **reference** it (link to the repo's copy), **lift** it (move it up to the
+> hub as the new home), or **supersede** it (hub owns it going forward; leave a pointer in
+> the repo). Pick one per artifact — never two copies of the same truth.
+
+---
+
 ## 2. Interview the user
 
-Ask only what the user hasn't already told you. **Batch the questions** (use your
-question/prompt UI to ask several at once — don't drip one at a time). Use sensible
-defaults and say what you assumed. Minimum set:
+Ask only what the user hasn't already told you (or what §1.5 didn't already answer).
+**Batch the questions** (use your question/prompt UI to ask several at once — don't drip one
+at a time). Use sensible defaults and say what you assumed. Minimum set:
 
 1. **Identity** — the project name / wordmark (and any **casing rule**, e.g. "always
    lowercase"); a one-line description of what it is; what kind of project it is
@@ -115,9 +138,13 @@ Work through the copied skeleton and make it real:
 - **`docs/repos/`** — one short overview per linked repo from the `_template.md` shape:
   role, GitHub link, and anything project-specific an agent must know before touching it.
 - **`docs/adr/`** — keep `0001-record-architecture-decisions.md` (it's generic and useful).
-  Write one ADR per known decision using `_template.md`.
-- **`.claude/hooks/ask-before-risky-commands.sh`** — set the command watchlist to the
-  families the user named (edit the marked regex; defaults are sensible).
+  Write one ADR per known decision using `_template.md`. **If the code repo already records
+  these decisions** (see §1.5), don't copy them verbatim into a second set that will drift —
+  reference the repo's ADRs, or lift them up and leave a pointer behind.
+- **`.claude/hooks/ask-before-risky-commands.sh`** — add the command families the user named
+  to `RISKY_WORDS` (edit the marked line). The defaults already gate cloud CLIs,
+  `git`/`docker push`, recursive `rm`, and a deploy script run by path; add `ssh`, a bespoke
+  deploy CLI, etc. as needed.
 - **`TEAM.md`** — fill or delete, per the interview.
 - **`README.md`** (the hub's own) — customize the intro, the key-repos table, and the
   "where to read next" list.
@@ -128,9 +155,14 @@ After filling a file, **remove the `<!-- TEMPLATE: … -->` guidance comments** 
 
 ## 5. Wire it up and verify
 
-- Make the script executable: `chmod +x scripts/repos.sh`.
+- Make the hub's hook executable: `chmod +x .claude/hooks/ask-before-risky-commands.sh`
+  (and `scripts/repos.sh`, if you kept it for a multi-repo hub).
 - If multi-repo: `make repos` (links/clones the repos), then `make status` (branches +
   dirty state). Report what linked and what's missing — don't claim success you didn't see.
+- **Run the verifier against the generated hub:** `scripts/verify-hub.sh <hub-dir>` (the
+  script lives in *this template repo*, not the hub). It fails on leftover `{{placeholders}}`
+  / `TEMPLATE:` notes, a non-executable hook, and broken internal links — the §7 checks,
+  automated. Fix anything it flags before reporting done.
 - `git add -A && git commit` the initial hub (only if the user wants it committed).
 - Give the user a short summary: what you created, what you assumed, and what's left `TBD`.
 
@@ -155,8 +187,8 @@ Replace every occurrence across the copied files:
 ## 7. Quality bar (don't skip)
 
 - **Strip every template-author example.** The generated hub must contain **zero** details
-  from any other project. Grep the result for leftover `{{`, `TEMPLATE:`, and example
-  strings before you finish.
+  from any other project. `scripts/verify-hub.sh <hub-dir>` greps for leftover `{{`,
+  `TEMPLATE:`, and broken links — run it (see §5); also eyeball for stray example strings.
 - **Don't invent facts.** If you don't know a domain, an account, a status — write `TBD`
   and flag it. A confident-but-wrong hub is worse than an honest sparse one.
 - **Respect the wordmark casing** the user gave you, everywhere user-facing.

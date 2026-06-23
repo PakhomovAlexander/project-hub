@@ -7,9 +7,10 @@
 # the loop for the commands that can change prod or destroy state.
 #
 # TEMPLATE: edit RISKY_WORDS for your project. The defaults cover common infra/cloud
-# tooling and `git push` / `docker push`. Add your own (e.g. a deploy CLI), or trim what
-# you don't use. Auto-allowing everything else means destructive *shell* commands (rm -rf,
-# etc.) are NOT gated here — agents are expected to be careful; tighten if you want.
+# tooling, `git push` / `docker push`, recursive `rm`, and a deploy script run by path
+# (./…/deploy.sh) — the prod-affecting / destructive commands almost every project shares.
+# Add your own command families (e.g. `ssh`, a bespoke deploy CLI) to RISKY_WORDS, or trim
+# what you don't use.
 set -u
 
 # --- the watchlist: command words that should prompt before running ----------------
@@ -30,6 +31,10 @@ fi
 # plus `git … push` and `docker … push` allowing global options before the subcommand.
 re="(^|[[:space:];&|(])(${RISKY_WORDS})([[:space:]]|$)"
 re="$re"'|(^|[[:space:];&|(])(git|docker)([[:space:]]+(-[A-Za-z-]+|[-_A-Za-z0-9]+=[^[:space:]]+|-C[[:space:]]+[^[:space:]]+))*[[:space:]]+push([[:space:]]|$)'
+# recursive rm (rm -rf / -r / -fr, with any paths before the flag) — irreversible delete.
+re="$re"'|(^|[[:space:];&|(])rm([[:space:]]+[^-][^[:space:]]*)*[[:space:]]+-[A-Za-z]*[rR]'
+# a deploy script invoked by path, e.g. ./scripts/deploy.sh — a word-list can't see it.
+re="$re"'|(^|[[:space:];&|(])([./A-Za-z0-9_-]*/)?deploy(\.[A-Za-z]+)?([[:space:]]|$)'
 
 if printf '%s\n' "$cmd" | grep -Eq "$re"; then
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Prod-affecting / destructive command — confirm before running."}}'
