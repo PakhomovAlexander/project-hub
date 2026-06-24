@@ -1,4 +1,8 @@
-> **Paste this to your Claude:** `Create a project hub from this template: <link-to-this-repo>`
+**Paste this into Claude Code** — hit the copy button, paste, and it scaffolds your hub:
+
+```
+Create a project hub from this template: https://github.com/PakhomovAlexander/project-hub
+```
 
 # Project Hub — a template for running a project with Claude Code
 
