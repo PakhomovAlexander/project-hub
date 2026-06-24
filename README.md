@@ -1,3 +1,5 @@
+> **Paste this to your Claude:** `Create a project hub from this template: <link-to-this-repo>`
+
 # Project Hub — a template for running a project with Claude Code
 
 A **Project Hub** is one repo that becomes the *cockpit* for your project: shared language,
