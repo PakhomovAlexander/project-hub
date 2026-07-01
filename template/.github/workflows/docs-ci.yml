@@ -1,0 +1,50 @@
+name: docs CI
+
+# TEMPLATE: this workflow keeps the hub's docs honest on every PR — markdownlint
+# (config in .markdownlint-cli2.jsonc) + an OFFLINE relative-link check that catches
+# stale doc paths. It's the continuous form of scripts/verify-hub.sh's one-shot checks.
+# Generic as-is; delete if the hub isn't on GitHub.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      - ".markdownlint-cli2.jsonc"
+      - ".github/workflows/docs-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - ".markdownlint-cli2.jsonc"
+      - ".github/workflows/docs-ci.yml"
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  markdownlint:
+    name: markdownlint (light, high-signal)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # Pinned for reproducibility; config is .markdownlint-cli2.jsonc.
+      - name: markdownlint-cli2
+        run: npx --yes markdownlint-cli2@0.22.1 "**/*.md"
+
+  links:
+    name: link check (internal, offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # --offline checks relative/file links only (catches stale doc paths) and
+      # skips remote URLs. Many hub links point at private repos / internal hosts /
+      # placeholders that aren't verifiable unauthenticated, so we don't fetch them.
+      - name: lychee (relative-link integrity)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --no-progress "./**/*.md"
+          fail: true
