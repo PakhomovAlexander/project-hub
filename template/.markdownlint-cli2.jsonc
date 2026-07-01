@@ -1,0 +1,31 @@
+{
+  // Light, high-signal Markdown gate for the hub's docs.
+  //
+  // Opinionated *stylistic* rules are disabled (line length, blank-line spacing
+  // around blocks, inline HTML, bare URLs, emphasis/list-marker style, table
+  // style) — they are pure noise on hand-written prose and big status tables.
+  //
+  // The *correctness* rules stay on (the defaults minus the list below): broken
+  // link fragments (MD051), empty/reversed links (MD042/MD011), undefined
+  // reference links (MD052/MD053), image alt text (MD045), hard tabs (MD010),
+  // trailing spaces (MD009), etc. They guard future edits.
+  "config": {
+    "default": true,
+    "MD004": false, // unordered-list marker style (-, *, +) — cosmetic
+    "MD013": false, // line length — too noisy for prose/tables
+    "MD018": false, // "no space after #" false-positives on "#1249" issue refs
+    "MD022": false, // blanks around headings — stylistic
+    "MD024": false, // duplicate heading text (common across sections)
+    "MD031": false, // blanks around fenced code — stylistic
+    "MD032": false, // blanks around lists — stylistic
+    "MD033": false, // inline HTML — used intentionally (incl. TEMPLATE comments)
+    "MD034": false, // bare URLs render fine on GitHub
+    "MD040": false, // fenced-code language not required
+    "MD041": false, // first line need not be a top-level heading
+    "MD049": false, // emphasis style (_ vs *)
+    "MD050": false, // strong style (__ vs **)
+    "MD058": false, // blanks around tables — stylistic
+    "MD060": false  // table column/pipe style — stylistic
+  },
+  "ignores": ["node_modules", "**/node_modules", ".git", "repos"]
+}

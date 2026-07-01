@@ -32,10 +32,19 @@ preserve them as you fill things in:
   keep it current.
 - **Deep docs for in-flight work** (`docs/workstreams/`). Design + acceptance criteria +
   a "resume here" section, so work survives interruption and hand-off.
+- **A service catalog** (`docs/service-catalog.md`). For a multi-service product: one row
+  per service (what it is, where it lives, doc status) plus a tiered doc standard, so agents
+  look a thing up instead of re-deriving it. Drop it for a small single-repo hub.
 - **Repos are linked, not vendored** (`scripts/repos.sh`, `repos.manifest`). The hub
   symlinks live working copies; it never edits them behind the user's back.
+- **Parallel agents, isolated** (`scripts/worktree.sh`, `docs/parallel-agents.md`). Several
+  agents over one hub collide on a single index/branch; each gets its own `git worktree`
+  (`make worktree`). Works even single-repo (agents on the hub's own docs).
 - **Safe by default** (`.claude/`). A pre-tool hook asks before prod-affecting / destructive
   commands and auto-allows the rest.
+- **Docs stay honest automatically** (`.markdownlint-cli2.jsonc`, `.github/workflows/docs-ci.yml`).
+  markdownlint + an offline internal-link check on every PR — the continuous form of
+  `verify-hub.sh`.
 - **Honesty discipline.** Verify before claiming done; fix stale docs in the same change;
   don't open cosmetic PRs.
 
@@ -113,8 +122,10 @@ at a time). Use sensible defaults and say what you assumed. Minimum set:
 
 Pick a location (ask if unclear; default: a sibling of the project's code workspace, the
 way a cockpit sits next to the planes). Copy the **contents of `template/`** into it —
-*not* this `SETUP.md` or the template's own `README.md`/`CLAUDE.md` (those describe the
-template, not the hub). Then `git init` it as its own repo.
+including the dotfiles (`.claude/`, `.github/`, `.markdownlint-cli2.jsonc`, `.gitignore`),
+which a plain `cp template/*` glob will miss — but *not* this `SETUP.md` or the template's
+own `README.md`/`CLAUDE.md` (those describe the template, not the hub). Then `git init` it
+as its own repo.
 
 ---
 
@@ -135,8 +146,13 @@ Work through the copied skeleton and make it real:
   and any known in-flight items. Mark unknowns `TBD`, don't invent status.
 - **`repos.manifest`** — one line per linked repo (`canonical:clone_dir:github_repo:kind`),
   matching what the user gave you. (Delete if single-repo.)
-- **`docs/repos/`** — one short overview per linked repo from the `_template.md` shape:
-  role, GitHub link, and anything project-specific an agent must know before touching it.
+- **`docs/repos/`** — one Tier-1 reference per linked repo from the `_template.md` shape:
+  role, GitHub link, deploy target, and anything project-specific an agent must know before
+  touching it. (Delete the directory for a single-repo project.)
+- **`docs/service-catalog.md`** — for a multi-service product, seed the catalog with the
+  linked repos/services (what each is, where it lives, doc status ☐) and keep the doc
+  standard + rollout plan. **Delete it for a small single-repo hub** — don't ship an empty
+  catalog. It links `docs/repos/_template.md` as the Tier-1 shape.
 - **`docs/adr/`** — keep `0001-record-architecture-decisions.md` (it's generic and useful).
   Write one ADR per known decision using `_template.md`. **If the code repo already records
   these decisions** (see §1.5), don't copy them verbatim into a second set that will drift —
@@ -155,10 +171,13 @@ After filling a file, **remove the `<!-- TEMPLATE: … -->` guidance comments** 
 
 ## 5. Wire it up and verify
 
-- Make the hub's hook executable: `chmod +x .claude/hooks/ask-before-risky-commands.sh`
-  (and `scripts/repos.sh`, if you kept it for a multi-repo hub).
+- Make the scripts executable: `chmod +x .claude/hooks/ask-before-risky-commands.sh
+  scripts/worktree.sh` (and `scripts/repos.sh`, if you kept it for a multi-repo hub).
 - If multi-repo: `make repos` (links/clones the repos), then `make status` (branches +
   dirty state). Report what linked and what's missing — don't claim success you didn't see.
+- The `.github/workflows/docs-ci.yml` gate (markdownlint + offline link check) runs once the
+  hub is pushed to GitHub; keep it, or delete `.github/` and `.markdownlint-cli2.jsonc` if the
+  hub won't live on GitHub. `scripts/verify-hub.sh` below runs the same link check locally now.
 - **Run the verifier against the generated hub:** `scripts/verify-hub.sh <hub-dir>` (the
   script lives in *this template repo*, not the hub). It fails on leftover `{{placeholders}}`
   / `TEMPLATE:` notes, a non-executable hook, and broken internal links — the §7 checks,

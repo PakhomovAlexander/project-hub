@@ -54,6 +54,16 @@ else
   note "present and executable"
 fi
 
+# 3b: any shipped shell scripts are executable ---------------------------------------
+# scripts/repos.sh is dropped for single-repo hubs; scripts/worktree.sh is kept — so
+# check whatever is present rather than requiring a fixed set.
+echo "==> scripts executable"
+scriptbad=0
+while IFS= read -r s; do
+  [ -x "$s" ] || { note "NOT EXECUTABLE: chmod +x ${s#$HUB/}"; scriptbad=1; }
+done < <(find "$HUB/scripts" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | sort)
+[ "$scriptbad" -eq 0 ] && note "all executable (or none present)" || fail=1
+
 # 4: relative markdown links resolve -------------------------------------------------
 echo "==> internal markdown links"
 linkbad=0

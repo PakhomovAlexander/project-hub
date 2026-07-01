@@ -32,13 +32,15 @@ back.
 ├── README.md              # you are here
 ├── CLAUDE.md              # working agreement for agents in this repo
 ├── TEAM.md                # people ↔ GitHub ↔ ownership
-├── Makefile · scripts/    # link / clone / status the key repos
+├── Makefile · scripts/    # link/clone/status the key repos · worktrees for parallel agents
 ├── repos.manifest         # the list of repos this hub coordinates
 ├── docs/
 │   ├── index.md           # map of all docs
 │   ├── plan.md            # the master plan
 │   ├── tracker.md         # live status board
+│   ├── service-catalog.md # every service & repo + doc status, the doc standard
 │   ├── issue-lifecycle.md # how the backlog moves
+│   ├── parallel-agents.md # run several agents at once, each in its own worktree
 │   ├── adr/               # architecture decision records
 │   ├── workstreams/       # in-flight work
 │   └── repos/             # per-repo overviews
@@ -51,6 +53,17 @@ back.
 make repos        # link the key repos into ./repos (clone what's missing)
 make status       # see what branch each repo is on and whether it's dirty
 make list         # the repo manifest
+```
+
+## Running several agents at once
+
+A single checkout has one branch + index, so parallel agents collide. Give each its own
+git worktree — see [`docs/parallel-agents.md`](docs/parallel-agents.md):
+
+```bash
+make worktree NAME=tracker    # isolated hub workspace on branch agent/tracker
+make worktree-ls              # list every agent worktree
+make worktree-rm NAME=tracker # tear it down when the PR merges
 ```
 
 ## Where to read next

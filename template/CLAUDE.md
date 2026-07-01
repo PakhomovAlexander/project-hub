@@ -11,7 +11,8 @@ the language before doing anything.
 
 ## The repos under `repos/` are live working copies
 
-<!-- TEMPLATE: DELETE this whole section for a single-repo project. -->
+<!-- TEMPLATE: DELETE this section for a single-repo project — but keep the worktree bullet
+     (parallel agents on the hub's own docs still collide on one checkout); move it up. -->
 
 `repos/<name>` is a **symlink to the real clone** in `{{CLONE_WORKSPACE}}`. Editing a file
 there edits that working copy **on whatever branch it currently has checked out**.
@@ -21,6 +22,9 @@ there edits that working copy **on whatever branch it currently has checked out*
   in-flight work there (feature branches, uncommitted changes).
 - These are separate git repos. Commit/push happens **inside** `repos/<name>`, against
   `{{ORG}}/<name>` — not from the hub. The hub commits only its own docs/tooling.
+- **Running several agents over the hub at once?** Give each its own `git worktree` — one
+  checkout has a single branch + index, so parallel agents collide. See
+  [`docs/parallel-agents.md`](docs/parallel-agents.md) (`make worktree` / `make worktree-repo`).
 
 ## Invariants (don't break these)
 
@@ -52,6 +56,19 @@ Run what you build before reporting it done. Type-checks and tests verify code c
 not feature correctness — if you can't run it, say so explicitly rather than claiming
 success. <!-- TEMPLATE: add project-specific dry-run guidance, e.g. for infra prefer
 `terraform plan` / `helm template` / `kubectl --dry-run` over asserting an outcome. -->
+
+## Changes land as code
+
+<!-- TEMPLATE: KEEP this for a project whose live state is reconciled from git (GitOps/ArgoCD,
+     Terraform, declarative deploys) — out-of-band edits get reverted, so "done" must mean
+     merged code. DELETE it for a project where this doesn't apply. Promote it to an ADR if
+     it's a load-bearing decision. -->
+
+Git is the source of truth for {{the reconciled surface — infra / deploy config / …}}. A
+change isn't done until it's **expressed as code and merged**. Debugging live out-of-band
+(a console edit, `kubectl edit`, an admin API) is fine **to confirm a fix** — but that's a
+**probe, not the change**: the next reconcile/redeploy reverts it. Backfill the probe into
+code and land it via PR; its issue isn't `status:merged` until that PR is.
 
 ## Issue lifecycle
 

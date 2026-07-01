@@ -24,11 +24,18 @@ Most "AI in the repo" setups give the agent a `CLAUDE.md` and hope. A hub goes f
 - **`docs/adr/`** — decisions recorded with options + consequences, superseding over time.
 - **`docs/tracker.md`** — a living status board: what's true *right now*, dated.
 - **`docs/workstreams/`** — deep design docs for in-flight work, with "resume here" sections.
+- **`docs/service-catalog.md`** — a tiered, agent-facing map of every service/repo + doc
+  status, so a session looks a thing up instead of re-deriving it.
 - **`scripts/repos.sh` + `repos.manifest`** — link many live repos into `repos/` as symlinks.
+- **`scripts/worktree.sh`** — run several agents over one hub at once, each in its own git
+  worktree, without branch/index collisions.
 - **`.claude/`** — a safety hook that prompts before prod/destructive commands.
+- **`.github/` docs CI** — markdownlint + an offline link check on every PR, so the docs
+  can't silently rot.
 
-The result: an agent can pick up cold work, speak your domain, respect your rules, and not
-nuke prod — and a human can read the whole project's state from one folder.
+The result: an agent can pick up cold work, speak your domain, respect your rules, not nuke
+prod, and run alongside a dozen of its peers — and a human can read the whole project's state
+from one folder.
 
 ## Use it (the "send a link" flow)
 
@@ -58,17 +65,21 @@ your-project-hub/
 ├── CLAUDE.md              # working agreement + invariants for agents
 ├── README.md             # the hub's own front door
 ├── TEAM.md               # people ↔ GitHub ↔ ownership (optional)
-├── Makefile · scripts/   # link / clone / status the linked repos
+├── Makefile · scripts/   # link/clone/status the repos · worktrees for parallel agents
 ├── repos.manifest        # the list of repos this hub coordinates
 ├── .claude/              # settings + the prompt-before-risky-commands hook
+├── .github/workflows/    # docs CI: markdownlint + offline link check
+├── .markdownlint-cli2.jsonc # light, high-signal Markdown rules
 ├── docs/
 │   ├── index.md          # map of all docs
 │   ├── plan.md           # the master plan (scope, workstreams, risks, decisions)
 │   ├── tracker.md        # live status board
+│   ├── service-catalog.md# every service/repo + doc status + the doc standard
 │   ├── issue-lifecycle.md# how the backlog moves
+│   ├── parallel-agents.md# running several agents at once via git worktrees
 │   ├── adr/              # architecture decision records (+ a seed ADR + a template)
 │   ├── workstreams/      # in-flight work: design + acceptance + resume-here
-│   └── repos/            # one short overview per linked repo
+│   └── repos/            # one Tier-1 reference per linked repo
 └── repos/                # symlinks into your real clones (gitignored)
 ```
 
