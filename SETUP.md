@@ -42,6 +42,10 @@ preserve them as you fill things in:
   (`make worktree`). Works even single-repo (agents on the hub's own docs).
 - **Safe by default** (`.claude/`). A pre-tool hook asks before prod-affecting / destructive
   commands and auto-allows the rest.
+- **Agent-agnostic** (`AGENTS.md` + `CLAUDE.md`). The working agreement lives in **one** file
+  (`CLAUDE.md`); `AGENTS.md` is a short vendor-neutral pointer to it, so any coding agent —
+  not just Claude Code — lands on the same rules. Keep the rules single-sourced; don't copy
+  them into both.
 - **Docs stay honest automatically** (`.markdownlint-cli2.jsonc`, `.github/workflows/docs-ci.yml`).
   markdownlint + an offline internal-link check on every PR — the continuous form of
   `verify-hub.sh`.
@@ -124,8 +128,9 @@ Pick a location (ask if unclear; default: a sibling of the project's code worksp
 way a cockpit sits next to the planes). Copy the **contents of `template/`** into it —
 including the dotfiles (`.claude/`, `.github/`, `.markdownlint-cli2.jsonc`, `.gitignore`),
 which a plain `cp template/*` glob will miss — but *not* this `SETUP.md` or the template's
-own `README.md`/`CLAUDE.md` (those describe the template, not the hub). Then `git init` it
-as its own repo.
+own root `README.md`/`CLAUDE.md`/`AGENTS.md` (those describe the template, not the hub — the
+hub gets its own `CLAUDE.md`/`AGENTS.md` from inside `template/`). Then `git init` it as its
+own repo.
 
 ---
 
@@ -140,6 +145,10 @@ Work through the copied skeleton and make it real:
 - **`CLAUDE.md`** — fill the invariants, the linked-repos rules (or delete that section for
   a single-repo project), PR/CI discipline, and verification/issue-lifecycle/doc-honesty
   sections. Keep it short.
+- **`AGENTS.md`** — leave it as the short vendor-neutral pointer to `CLAUDE.md`/`CONTEXT.md`;
+  just resolve `{{PROJECT_NAME}}` and drop the TEMPLATE comment. It exists so agents other
+  than Claude Code drive the hub from the same working agreement — keep the actual rules in
+  `CLAUDE.md` only, never duplicated here.
 - **`docs/plan.md`** — the master plan: goal, scope (in/out), workstreams, timeline,
   risks, a decision register. Scale to the project; cut sections that don't apply.
 - **`docs/tracker.md`** — seed the live board: today's date, the workstreams from the plan,
