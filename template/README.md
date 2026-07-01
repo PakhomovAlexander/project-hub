@@ -31,6 +31,7 @@ back.
 ├── CONTEXT.md              # shared language / glossary (read this first)
 ├── README.md              # you are here
 ├── CLAUDE.md              # working agreement for agents in this repo
+├── AGENTS.md              # vendor-neutral entry point → CLAUDE.md (any agent)
 ├── TEAM.md                # people ↔ GitHub ↔ ownership
 ├── Makefile · scripts/    # link/clone/status the key repos · worktrees for parallel agents
 ├── repos.manifest         # the list of repos this hub coordinates

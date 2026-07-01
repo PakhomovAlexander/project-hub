@@ -21,6 +21,8 @@ Most "AI in the repo" setups give the agent a `CLAUDE.md` and hope. A hub goes f
 - **`CONTEXT.md`** — a real glossary (ubiquitous language) so the agent uses *your* words.
 - **`CLAUDE.md`** — the working agreement: invariants the agent must never break, plus
   PR/CI, verification, and doc-honesty discipline.
+- **`AGENTS.md`** — a vendor-neutral pointer to `CLAUDE.md`, so agents beyond Claude Code
+  (Cursor, Codex, …) drive the hub from the same rules — one source of truth, no drift.
 - **`docs/adr/`** — decisions recorded with options + consequences, superseding over time.
 - **`docs/tracker.md`** — a living status board: what's true *right now*, dated.
 - **`docs/workstreams/`** — deep design docs for in-flight work, with "resume here" sections.
@@ -63,6 +65,7 @@ cd project-hub-template
 your-project-hub/
 ├── CONTEXT.md              # shared language / glossary — read first
 ├── CLAUDE.md              # working agreement + invariants for agents
+├── AGENTS.md             # vendor-neutral entry point → CLAUDE.md (any agent)
 ├── README.md             # the hub's own front door
 ├── TEAM.md               # people ↔ GitHub ↔ ownership (optional)
 ├── Makefile · scripts/   # link/clone/status the repos · worktrees for parallel agents
@@ -88,8 +91,8 @@ invariants, the ADRs, and the safety hook.
 
 ## What's in this template repo
 
-- [`SETUP.md`](SETUP.md) — the runbook Claude follows to scaffold a hub. Read it to see
-  exactly what the agent will do.
+- [`SETUP.md`](SETUP.md) — the runbook an agent follows to scaffold a hub (both `AGENTS.md`
+  and `CLAUDE.md` point here). Read it to see exactly what the agent will do.
 - [`template/`](template/) — the hub skeleton (placeholders + inline guidance) that gets
   copied and customized into your new hub.
 - [`scripts/verify-hub.sh`](scripts/verify-hub.sh) — run it against a generated hub to catch
