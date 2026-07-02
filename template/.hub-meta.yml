@@ -1,0 +1,16 @@
+# .hub-meta.yml — where this hub came from. The /update-hub skill reads it to fetch
+# the right template, diff since the recorded commit, and re-apply changes with this
+# hub's own values. Setup and updates maintain it; edit by hand only to backfill.
+template:
+  url: {{TEMPLATE_URL}}
+  sha: {{TEMPLATE_SHA}}
+  generated: {{TODAY}}
+layout: {{HUB_LAYOUT}} # multi-repo | single-repo
+answers: # the interview values — reused to resolve tokens in updated/new files
+  PROJECT_NAME: "{{PROJECT_NAME}}"
+  PROJECT_TAGLINE: "{{PROJECT_TAGLINE}}"
+  ORG: "{{ORG}}"
+  CLONE_WORKSPACE: "{{CLONE_WORKSPACE}}"
+  HUB_REPO: "{{HUB_REPO}}"
+  DEFAULT_OWNER: "{{DEFAULT_OWNER}}"
+dropped: [] # template paths removed during setup (single-repo trims etc.) — updates skip them

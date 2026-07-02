@@ -1,8 +1,9 @@
 name: template CI
 
 # The template tests itself: shellcheck on every shipped script, a table-driven
-# regression test of the risky-commands hook, and a full scaffold→verify smoke run
-# that generates a hub from template/ exactly the way SETUP.md prescribes.
+# regression test of the risky-commands hook, a full scaffold→verify smoke run that
+# generates a hub from template/ exactly the way SETUP.md prescribes, and an update
+# drill that evolves the template and applies UPDATE.md's mechanics to a hub.
 
 on:
   pull_request:
@@ -33,6 +34,8 @@ jobs:
         run: tests/hook-test.sh
       - name: scaffold a hub from template/ and verify it
         run: tests/smoke-scaffold.sh
+      - name: evolve the template and update a generated hub (UPDATE.md mechanics)
+        run: tests/smoke-update.sh
 
   docs:
     name: markdownlint + link check

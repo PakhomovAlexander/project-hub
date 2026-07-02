@@ -146,10 +146,10 @@ way a cockpit sits next to the planes). Copy the **contents of `template/`** int
 `cp -a template/. <hub-dir>` (or `rsync -a template/ <hub-dir>/`) — `-a` keeps the dotfiles
 (`.agents/`, `.claude/`, `.github/`, `.markdownlint-cli2.jsonc`, `.gitignore`) **and**
 preserves the `.claude/skills → ../.agents/skills` symlink, both of which a plain
-`cp template/*` glob destroys. Don't copy this `SETUP.md` or the template's own root
-`README.md`/`CLAUDE.md`/`AGENTS.md` (those describe the template, not the hub — the hub
-gets its own from inside `template/`; they're outside `template/`, so the `cp -a` above
-already excludes them). Then `git init` it as its own repo. (Windows, where symlinks may
+`cp template/*` glob destroys. Don't copy this `SETUP.md`, `UPDATE.md`, or the template's
+own root `README.md`/`CLAUDE.md`/`AGENTS.md` (those describe the template, not the hub —
+the hub gets its own from inside `template/`; they're outside `template/`, so the `cp -a`
+above already excludes them). Then `git init` it as its own repo. (Windows, where symlinks may
 materialize as text files: replace `.claude/skills` with a real copy of `.agents/skills`.)
 
 ---
@@ -169,13 +169,20 @@ Work through the copied skeleton and make it real:
 - **`CLAUDE.md`** — leave it thin: keep the `@AGENTS.md` + `@CONTEXT.md` imports at the
   top, resolve the placeholders, and that's it. The rules live in `AGENTS.md` only, never
   duplicated here. (Single-repo: trim the linked-clones phrase from the guardrails bullet.)
-- **`.agents/skills/`** — the five skills are generic; keep them as-is. Single-repo
-  project: delete `onboard-repo/`. If the team has other recurring processes, add one
-  skill per process (a directory + `SKILL.md`, `name` matching the directory).
+- **`.agents/skills/`** — the six skills are generic; keep them as-is. Single-repo
+  project: delete `onboard-repo/` (but keep `update-hub/` — it's how the hub takes
+  template upgrades later). If the team has other recurring processes, add one skill
+  per process (a directory + `SKILL.md`, `name` matching the directory).
 - **`.claude/settings.json`** — resolve `{{CLONE_WORKSPACE}}` in
   `permissions.additionalDirectories` (single-repo: delete that key and the
   `make`/`repos.sh` entries in `permissions.allow`). Mirror the user's risky families into
   `permissions.ask`, kept in sync with the hook's `RISKY_WORDS`.
+- **`.hub-meta.yml`** — the hub's provenance, read by `/update-hub` when the template
+  improves later (see [`UPDATE.md`](UPDATE.md)). Resolve `{{TEMPLATE_URL}}` (this
+  template repo's clone URL) and `{{TEMPLATE_SHA}}` (its `git rev-parse --short HEAD`),
+  set `layout:`, keep `answers:` matching what the interview settled (delete rows that
+  don't apply), and list in `dropped:` **every** template file you remove during setup —
+  single-repo trims, a deleted `TEAM.md`, a skipped catalog — so updates skip them too.
 - **`.mcp.json`** (only if the user opted in at §2.5) — a project-scoped MCP config at the
   hub root wiring the backlog tool, e.g.
   `{ "mcpServers": { "<backlog>": { "type": "http", "url": "<the tool's MCP endpoint>" } } }`.
@@ -241,9 +248,10 @@ After filling a file, **remove the `<!-- TEMPLATE: … -->` guidance comments** 
   leftover placeholders / template markers, non-executable hooks, broken internal links,
   and links into `repos/` — the §7 checks, automated. Fix everything it flags before
   reporting done.
-- **Stamp the provenance** at the bottom of the hub's `README.md`:
-  `<!-- generated from project-hub@<short-sha> -->` (this template repo's
-  `git rev-parse --short HEAD`), so future template upgrades are diffable.
+- **Finalize `.hub-meta.yml`** — confirm `template.sha` is the commit you actually
+  scaffolded from and `dropped:` lists everything you removed. This file is what turns a
+  future `/update-hub` run (see [`UPDATE.md`](UPDATE.md)) into a clean three-way merge
+  instead of guesswork.
 - `git add -A && git commit` the initial hub (only if the user wants it committed).
 - Give the user a short summary: what you created, what you assumed, and what's left `TBD`.
 
@@ -262,9 +270,13 @@ Replace every occurrence across the copied files:
 | `{{HUB_REPO}}` | The hub's own `org/repo`, for the backlog (optional) | `acme-inc/hub` |
 | `{{DEFAULT_OWNER}}` | Fallback owner GitHub handle | `octocat` |
 | `{{TODAY}}` | Date stamp for the tracker snapshot | `2026-06-23` |
+| `{{TEMPLATE_URL}}` | This template repo's clone URL | `https://github.com/acme-inc/project-hub` |
+| `{{TEMPLATE_SHA}}` | Template commit the hub was generated from | `62c9ca8` |
+| `{{HUB_LAYOUT}}` | `multi-repo` or `single-repo` | `multi-repo` |
 
-Tokens live in Markdown, the scripts, `repos.manifest`, **and `.claude/settings.json`**
-(`{{CLONE_WORKSPACE}}` in `additionalDirectories`) — `scripts/verify.sh` catches any you miss.
+Tokens live in Markdown, the scripts, `repos.manifest`, `.claude/settings.json`
+(`{{CLONE_WORKSPACE}}` in `additionalDirectories`), **and `.hub-meta.yml`** (the three
+template-provenance tokens) — `scripts/verify.sh` catches any you miss.
 
 ---
 
@@ -282,7 +294,8 @@ Tokens live in Markdown, the scripts, `repos.manifest`, **and `.claude/settings.
   what doesn't earn its place; the skeleton is a menu, not a mandate.
 - **Single-repo projects:** drop the linking machinery (§2.2), the `additionalDirectories`
   key and `make`/`repos.sh` allow-entries in `.claude/settings.json`, and the
-  `onboard-repo` skill — don't ship dead tooling.
+  `onboard-repo` skill — don't ship dead tooling. Record every dropped path in
+  `.hub-meta.yml` `dropped:` so template updates don't resurrect them.
 
 When you're done, the user should be able to open the hub and have a sharp, honest cockpit
 for their project — and you (or any agent) should be able to operate in it from `AGENTS.md`

@@ -16,8 +16,9 @@
 #   3. relative markdown links resolve to a real file
 #   4. no markdown links INTO repos/ — it is gitignored, so such links break in CI
 #      and on fresh clones; cite those paths as inline code instead
+#   5. .hub-meta.yml provenance present and resolved — /update-hub depends on it
 # Warns (never fail):
-#   5. docs/tracker.md snapshot date is old or missing
+#   6. docs/tracker.md snapshot date is old or missing
 #
 # Portable: runs under macOS stock bash 3.2 (no mapfile / associative arrays).
 set -u
@@ -101,7 +102,26 @@ done < <(find "$HUB" -type f -name '*.md' \
   -not -path '*/.git/*' -not -path '*/node_modules/*' -not -name '_template.md' | sort)
 [ "$linkbad" -eq 0 ] && note "all resolve" || fail=1
 
-# 5: tracker freshness (warn only) -----------------------------------------------------
+# 5: template provenance — /update-hub depends on it -----------------------------------
+echo "==> template provenance (.hub-meta.yml)"
+meta="$HUB/.hub-meta.yml"
+metabad=0
+if [ ! -f "$meta" ]; then
+  note "MISSING: .hub-meta.yml — the hub can't take template updates; backfill it (shape: template/.hub-meta.yml in the template repo; runbook: its UPDATE.md)"
+  metabad=1
+else
+  grep -qE '^[[:space:]]*url:[[:space:]]*[^[:space:]]' "$meta" \
+    || { note "INCOMPLETE: .hub-meta.yml has no template url"; metabad=1; }
+  grep -qE '^[[:space:]]*sha:[[:space:]]*[^[:space:]]' "$meta" \
+    || { note "INCOMPLETE: .hub-meta.yml has no template sha"; metabad=1; }
+  if grep -E "$ph" "$meta" >/dev/null 2>&1; then
+    note "UNRESOLVED: .hub-meta.yml still holds placeholder tokens — fill the real url / sha / layout"
+    metabad=1
+  fi
+fi
+if [ "$metabad" -eq 0 ]; then note "ok"; else fail=1; fi
+
+# 6: tracker freshness (warn only) -----------------------------------------------------
 echo "==> tracker freshness (warning only)"
 tracker="$HUB/docs/tracker.md"
 if [ -f "$tracker" ]; then
