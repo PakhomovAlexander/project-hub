@@ -14,9 +14,10 @@
 #   scripts/repos.sh --list     # print the manifest and exit
 #
 # Env:
-#   HUB_ORG          GitHub org for clones      (default: {{ORG}})
-#   HUB_CLONE_ROOT   where the real clones live (default: <hub>/{{CLONE_WORKSPACE}})
-#   HUB_MANIFEST     manifest file              (default: <hub>/repos.manifest)
+#   HUB_ORG               GitHub org for clones      (default: {{ORG}})
+#   HUB_CLONE_ROOT        where the real clones live (default: <hub>/{{CLONE_WORKSPACE}})
+#   HUB_MANIFEST          manifest file              (default: <hub>/repos.manifest)
+#   HUB_CLONE_URL_PREFIX  URL style when gh is absent (default: git@github.com:)
 
 set -euo pipefail
 
@@ -87,7 +88,15 @@ for e in "${REPOS[@]}"; do
   # mode = link
   if [ ! -d "${src}/.git" ]; then
     echo "cloning ${ORG}/${repo} -> ${src}"
-    if ! git clone --quiet "git@github.com:${ORG}/${repo}.git" "$src"; then
+    # gh uses whatever GitHub auth you already have (HTTPS or SSH); plain git falls
+    # back to SSH. Override the bare-git URL style with HUB_CLONE_URL_PREFIX
+    # (e.g. "https://github.com/").
+    if command -v gh >/dev/null 2>&1; then
+      cloner=(gh repo clone "${ORG}/${repo}" "$src" -- --quiet)
+    else
+      cloner=(git clone --quiet "${HUB_CLONE_URL_PREFIX:-git@github.com:}${ORG}/${repo}.git" "$src")
+    fi
+    if ! "${cloner[@]}"; then
       echo "  WARN: clone failed for ${ORG}/${repo}; skipping link" >&2
       continue
     fi

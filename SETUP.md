@@ -23,7 +23,7 @@ preserve them as you fill things in:
 - **Ubiquitous language first** (`CONTEXT.md`). A glossary with crisp definitions, an
   *Avoid* list per term, the relationships between terms, and flagged ambiguities. Everyone
   (humans + agents) speaks the same words. This is the highest-leverage file — get it right.
-- **Invariants** (`CLAUDE.md`). A short list of rules an agent must never break. Make them
+- **Invariants** (`AGENTS.md`). A short list of rules an agent must never break. Make them
   concrete and testable, not platitudes.
 - **Decisions are recorded** (`docs/adr/`). Architecture Decision Records, each with the
   options considered and the consequences. Decisions supersede each other honestly over time.
@@ -40,15 +40,23 @@ preserve them as you fill things in:
 - **Parallel agents, isolated** (`scripts/worktree.sh`, `docs/parallel-agents.md`). Several
   agents over one hub collide on a single index/branch; each gets its own `git worktree`
   (`make worktree`). Works even single-repo (agents on the hub's own docs).
-- **Safe by default** (`.claude/`). A pre-tool hook asks before prod-affecting / destructive
-  commands and auto-allows the rest.
-- **Agent-agnostic** (`AGENTS.md` + `CLAUDE.md`). The working agreement lives in **one** file
-  (`CLAUDE.md`); `AGENTS.md` is a short vendor-neutral pointer to it, so any coding agent —
-  not just Claude Code — lands on the same rules. Keep the rules single-sourced; don't copy
-  them into both.
+- **Safe by default, in layers** (`.claude/`). Declarative permission lists (safe hub
+  commands pre-allowed, risky families set to *ask*) backed by a pre-tool hook that catches
+  risky commands in wrapper forms — and otherwise stays neutral, never widening what the
+  user's own permission rules would allow. A session-start hook injects a **hub brief**
+  (tracker snapshot age + repo status) so every session opens situationally aware.
+- **Agent-agnostic** (`AGENTS.md` + `CLAUDE.md`). The working agreement lives in **one**
+  file — `AGENTS.md`, the vendor-neutral standard that Codex, Cursor, Gemini CLI & co. read
+  natively. `CLAUDE.md` is a thin adapter that imports it (`@AGENTS.md`) along with the
+  glossary (`@CONTEXT.md`), so Claude Code deterministically loads the same rules. Keep the
+  rules single-sourced; never copy them into both.
+- **Processes are executable** (`.agents/skills/`). The hub's recurring workflows — record
+  an ADR, refresh the tracker, resume a workstream, onboard a repo, self-check — ship as
+  skills in the open Agent Skills format (Claude Code reads the same files via the
+  `.claude/skills` link).
 - **Docs stay honest automatically** (`.markdownlint-cli2.jsonc`, `.github/workflows/docs-ci.yml`).
   markdownlint + an offline internal-link check on every PR — the continuous form of
-  `verify-hub.sh`.
+  `scripts/verify.sh`, which also ships inside the hub for local runs (`/verify`).
 - **Honesty discipline.** Verify before claiming done; fix stale docs in the same change;
   don't open cosmetic PRs.
 
@@ -76,6 +84,8 @@ find the project's actual code and mine it — a single sibling repo, the repos 
 the user named, or the repo they linked. Pull defaults from:
 
 - **`hugo.toml` / `package.json` / `Cargo.toml` / `go.mod` / `*.tf`** — name, language, stack.
+- **CI configs / Makefiles / package scripts** — each repo's **dev loop** (build · test ·
+  lint · run), which feeds the Dev loop section of its `docs/repos/<name>.md`.
 - **An existing `CONTEXT.md`, `CLAUDE.md`, `README.md`, `docs/adr/`, `backlog.md`** — the
   project may *already* have a glossary, invariants, decisions, and a backlog. Read them.
 - **`git log` / `git remote`** — recent direction, the real org/owner, what's in flight.
@@ -103,8 +113,9 @@ at a time). Use sensible defaults and say what you assumed. Minimum set:
    (single repo · multi-repo product · infra/platform).
 2. **Linked repos** — does this project span multiple repos?
    - If **yes**: the GitHub **org/owner**; the list of repos (for each: the name you'll
-     `cd` into, the actual clone directory name if different, the GitHub repo to clone, and
-     a kind tag like `service`/`infra`/`web`/`lib`); and **where the real clones live**
+     `cd` into, the actual clone directory name if different, the GitHub repo to clone, a
+     kind tag like `service`/`infra`/`web`/`lib`, and its **dev-loop commands** — build /
+     test / lint / run; propose what you mined in §1.5); and **where the real clones live**
      (usually a sibling workspace directory).
    - If **no** (single repo): skip the linking machinery — drop `repos/`, `repos.manifest`,
      `scripts/repos.sh`, and the `repos` targets from the `Makefile`. Say you did.
@@ -114,23 +125,32 @@ at a time). Use sensible defaults and say what you assumed. Minimum set:
 4. **Surfaces** (optional) — environments, domains, registries, accounts. Only if relevant.
 5. **Backlog** — where issues live (GitHub Issues · Jira · a tracker file) and any
    lifecycle convention (e.g. "don't close on merge; close after prod verification").
+   If it's Jira/Linear/another tool with an MCP server, offer to add a project-scoped
+   `.mcp.json` so agents get the backlog as tools (GitHub needs none — `gh` covers it).
 6. **Team** (optional) — people ↔ GitHub handles ↔ areas of ownership, and a default owner.
 7. **Risky commands** — which command families should *prompt before running*. Offer the
    default set (`git push`, `aws`, `gcloud`, `az`, `kubectl`, `helm`, `terraform`,
-   `terragrunt`, `docker push`) and let them add/remove.
+   `terragrunt`, `docker push`) and let them add/remove. The answer lands in **two synced
+   places**: `RISKY_WORDS` in the hook and `permissions.ask` in `.claude/settings.json`.
 8. **Known decisions** — any architectural decisions already made, to seed as ADRs.
+9. **Linked-repo pointers** (multi-repo only) — offer to add a thin `AGENTS.md` to each
+   linked repo, via that repo's normal PR flow, so the hub's invariants travel with agents
+   launched inside those repos (see §5 for the shape).
 
 ---
 
 ## 3. Create the hub directory
 
 Pick a location (ask if unclear; default: a sibling of the project's code workspace, the
-way a cockpit sits next to the planes). Copy the **contents of `template/`** into it —
-including the dotfiles (`.claude/`, `.github/`, `.markdownlint-cli2.jsonc`, `.gitignore`),
-which a plain `cp template/*` glob will miss — but *not* this `SETUP.md` or the template's
-own root `README.md`/`CLAUDE.md`/`AGENTS.md` (those describe the template, not the hub — the
-hub gets its own `CLAUDE.md`/`AGENTS.md` from inside `template/`). Then `git init` it as its
-own repo.
+way a cockpit sits next to the planes). Copy the **contents of `template/`** into it with
+`cp -a template/. <hub-dir>` (or `rsync -a template/ <hub-dir>/`) — `-a` keeps the dotfiles
+(`.agents/`, `.claude/`, `.github/`, `.markdownlint-cli2.jsonc`, `.gitignore`) **and**
+preserves the `.claude/skills → ../.agents/skills` symlink, both of which a plain
+`cp template/*` glob destroys. Don't copy this `SETUP.md` or the template's own root
+`README.md`/`CLAUDE.md`/`AGENTS.md` (those describe the template, not the hub — the hub
+gets its own from inside `template/`; they're outside `template/`, so the `cp -a` above
+already excludes them). Then `git init` it as its own repo. (Windows, where symlinks may
+materialize as text files: replace `.claude/skills` with a real copy of `.agents/skills`.)
 
 ---
 
@@ -142,13 +162,24 @@ Work through the copied skeleton and make it real:
 - **`CONTEXT.md`** — write the real glossary. One entry per core term: definition, an
   *Avoid* list, then Relationships, an Example dialogue, and Flagged ambiguities. This is
   the file to spend the most care on. Delete the instructional `<!-- … -->` notes as you go.
-- **`CLAUDE.md`** — fill the invariants, the linked-repos rules (or delete that section for
-  a single-repo project), PR/CI discipline, and verification/issue-lifecycle/doc-honesty
-  sections. Keep it short.
-- **`AGENTS.md`** — leave it as the short vendor-neutral pointer to `CLAUDE.md`/`CONTEXT.md`;
-  just resolve `{{PROJECT_NAME}}` and drop the TEMPLATE comment. It exists so agents other
-  than Claude Code drive the hub from the same working agreement — keep the actual rules in
-  `CLAUDE.md` only, never duplicated here.
+- **`AGENTS.md`** — the working agreement, canonical for **every** agent. Fill the
+  invariants, the linked-repos rules (or delete that section for a single-repo project),
+  and point the issue-lifecycle line at the real backlog. Keep it short (aim well under
+  200 lines) — anything procedural belongs in a skill, not here.
+- **`CLAUDE.md`** — leave it thin: keep the `@AGENTS.md` + `@CONTEXT.md` imports at the
+  top, resolve the placeholders, and that's it. The rules live in `AGENTS.md` only, never
+  duplicated here. (Single-repo: trim the linked-clones phrase from the guardrails bullet.)
+- **`.agents/skills/`** — the five skills are generic; keep them as-is. Single-repo
+  project: delete `onboard-repo/`. If the team has other recurring processes, add one
+  skill per process (a directory + `SKILL.md`, `name` matching the directory).
+- **`.claude/settings.json`** — resolve `{{CLONE_WORKSPACE}}` in
+  `permissions.additionalDirectories` (single-repo: delete that key and the
+  `make`/`repos.sh` entries in `permissions.allow`). Mirror the user's risky families into
+  `permissions.ask`, kept in sync with the hook's `RISKY_WORDS`.
+- **`.mcp.json`** (only if the user opted in at §2.5) — a project-scoped MCP config at the
+  hub root wiring the backlog tool, e.g.
+  `{ "mcpServers": { "<backlog>": { "type": "http", "url": "<the tool's MCP endpoint>" } } }`.
+  Don't ship one for GitHub-backed backlogs — `gh` already covers them.
 - **`docs/plan.md`** — the master plan: goal, scope (in/out), workstreams, timeline,
   risks, a decision register. Scale to the project; cut sections that don't apply.
 - **`docs/tracker.md`** — seed the live board: today's date, the workstreams from the plan,
@@ -167,9 +198,11 @@ Work through the copied skeleton and make it real:
   these decisions** (see §1.5), don't copy them verbatim into a second set that will drift —
   reference the repo's ADRs, or lift them up and leave a pointer behind.
 - **`.claude/hooks/ask-before-risky-commands.sh`** — add the command families the user named
-  to `RISKY_WORDS` (edit the marked line). The defaults already gate cloud CLIs,
-  `git`/`docker push`, recursive `rm`, and a deploy script run by path; add `ssh`, a bespoke
-  deploy CLI, etc. as needed.
+  to `RISKY_WORDS` (edit the marked line), mirrored in `permissions.ask` (see above). The
+  defaults already gate cloud CLIs, `git`/`docker push`, `git clean`, recursive `rm`,
+  `find -delete`, package publishing, `gh pr merge`/`repo delete`/releases, and a deploy
+  script run by path; add `ssh`, a bespoke deploy CLI, etc. as needed.
+  (`session-brief.sh` needs no editing — it degrades by itself on single-repo hubs.)
 - **`TEAM.md`** — fill or delete, per the interview.
 - **`README.md`** (the hub's own) — customize the intro, the key-repos table, and the
   "where to read next" list.
@@ -180,17 +213,37 @@ After filling a file, **remove the `<!-- TEMPLATE: … -->` guidance comments** 
 
 ## 5. Wire it up and verify
 
-- Make the scripts executable: `chmod +x .claude/hooks/ask-before-risky-commands.sh
-  scripts/worktree.sh` (and `scripts/repos.sh`, if you kept it for a multi-repo hub).
+- Make the hooks and scripts executable: `chmod +x .claude/hooks/*.sh scripts/*.sh`.
 - If multi-repo: `make repos` (links/clones the repos), then `make status` (branches +
   dirty state). Report what linked and what's missing — don't claim success you didn't see.
+- **If the user opted into linked-repo pointers (§2.9):** add a thin `AGENTS.md` to each
+  linked repo *through that repo's normal PR flow* — never commit into a linked repo behind
+  the user's back. The shape:
+
+  ```markdown
+  # AGENTS.md — <repo>
+
+  This repo is coordinated from the <project> Project Hub: <hub location / URL>.
+  Before non-trivial changes, read the hub's AGENTS.md (working agreement) and
+  CONTEXT.md (shared language). Invariants that bind this repo: <the 1–3 that
+  apply, stated verbatim, each citing its ADR>.
+  ```
+
+  If the repo already has an `AGENTS.md`, append a short "Coordinated from the hub"
+  section instead of replacing it.
 - The `.github/workflows/docs-ci.yml` gate (markdownlint + offline link check) runs once the
   hub is pushed to GitHub; keep it, or delete `.github/` and `.markdownlint-cli2.jsonc` if the
-  hub won't live on GitHub. `scripts/verify-hub.sh` below runs the same link check locally now.
-- **Run the verifier against the generated hub:** `scripts/verify-hub.sh <hub-dir>` (the
-  script lives in *this template repo*, not the hub). It fails on leftover `{{placeholders}}`
-  / `TEMPLATE:` notes, a non-executable hook, and broken internal links — the §7 checks,
-  automated. Fix anything it flags before reporting done.
+  hub won't live on GitHub. If the user wants an *agentic* review lane too (tracker
+  freshness, doc consistency on PRs), offer a workflow on `anthropics/claude-code-action@v1`
+  — opt-in only, since it needs an API-key secret configured.
+- **Run the verifier:** `scripts/verify.sh` inside the hub — it ships with the hub (this
+  template repo wraps the same script as `scripts/verify-hub.sh <hub-dir>`). It fails on
+  leftover placeholders / template markers, non-executable hooks, broken internal links,
+  and links into `repos/` — the §7 checks, automated. Fix everything it flags before
+  reporting done.
+- **Stamp the provenance** at the bottom of the hub's `README.md`:
+  `<!-- generated from project-hub@<short-sha> -->` (this template repo's
+  `git rev-parse --short HEAD`), so future template upgrades are diffable.
 - `git add -A && git commit` the initial hub (only if the user wants it committed).
 - Give the user a short summary: what you created, what you assumed, and what's left `TBD`.
 
@@ -210,20 +263,27 @@ Replace every occurrence across the copied files:
 | `{{DEFAULT_OWNER}}` | Fallback owner GitHub handle | `octocat` |
 | `{{TODAY}}` | Date stamp for the tracker snapshot | `2026-06-23` |
 
+Tokens live in Markdown, the scripts, `repos.manifest`, **and `.claude/settings.json`**
+(`{{CLONE_WORKSPACE}}` in `additionalDirectories`) — `scripts/verify.sh` catches any you miss.
+
 ---
 
 ## 7. Quality bar (don't skip)
 
 - **Strip every template-author example.** The generated hub must contain **zero** details
-  from any other project. `scripts/verify-hub.sh <hub-dir>` greps for leftover `{{`,
-  `TEMPLATE:`, and broken links — run it (see §5); also eyeball for stray example strings.
+  from any other project. The verifier greps for leftover placeholder tokens, template
+  markers, and broken links — run it (see §5); also eyeball for stray example strings.
 - **Don't invent facts.** If you don't know a domain, an account, a status — write `TBD`
   and flag it. A confident-but-wrong hub is worse than an honest sparse one.
+- **Never link into `repos/`** from hub docs — cite those paths as inline code. `repos/` is
+  gitignored, so such links break docs CI and fresh clones; the verifier fails on them.
 - **Respect the wordmark casing** the user gave you, everywhere user-facing.
 - **Scale to the project.** A small project doesn't need 10 workstreams or 5 ADRs. Delete
   what doesn't earn its place; the skeleton is a menu, not a mandate.
-- **Single-repo projects:** drop the linking machinery (§2.2) — don't ship dead tooling.
+- **Single-repo projects:** drop the linking machinery (§2.2), the `additionalDirectories`
+  key and `make`/`repos.sh` allow-entries in `.claude/settings.json`, and the
+  `onboard-repo` skill — don't ship dead tooling.
 
 When you're done, the user should be able to open the hub and have a sharp, honest cockpit
-for their project — and you (or any agent) should be able to operate in it from `CLAUDE.md`
+for their project — and you (or any agent) should be able to operate in it from `AGENTS.md`
 + `CONTEXT.md` alone.

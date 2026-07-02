@@ -17,7 +17,7 @@ Maintain it as work moves — it's only useful if it's current.
 
 | Item | State | Where | Next action |
 |------|-------|-------|-------------|
-| {{item}} | ◐ | [{{workstream/PR}}]({{link}}) | {{the next concrete step}} |
+| {{item}} | ◐ | {{workstream doc / PR — link it}} | {{the next concrete step}} |
 
 ## Open decisions / gaps
 

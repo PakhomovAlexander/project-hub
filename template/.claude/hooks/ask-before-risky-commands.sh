@@ -2,15 +2,23 @@
 # Claude Code PreToolUse(Bash) gate — {{PROJECT_NAME}} Project Hub.
 #
 # Prompts before prod-affecting / destructive commands in ANY wrapper form
-# (env VAR=val …, tool -C <dir> …, chained with ; && |, multi-line); auto-allows
-# everything else. This keeps day-to-day work friction-free while putting a human in
-# the loop for the commands that can change prod or destroy state.
+# (env VAR=val …, tool -C <dir> …, chained with ; && |, multi-line, quoted via
+# bash -c '…'). For everything else it stays SILENT (exit 0, no decision), so the
+# normal permission rules — permissions.allow / ask / deny in .claude/settings.json
+# and the session's permission mode — decide as usual.
+#
+# This is one layer of defense, not a replacement for the permission system: a
+# pattern match over a command string is best-effort (quoting and indirection can
+# evade any blocklist). It backs up the declarative permissions.ask list in
+# .claude/settings.json — KEEP THE TWO IN SYNC — and for fully autonomous runs,
+# prefer OS-level sandboxing on top.
 #
 # TEMPLATE: edit RISKY_WORDS for your project. The defaults cover common infra/cloud
-# tooling, `git push` / `docker push`, recursive `rm`, and a deploy script run by path
-# (./…/deploy.sh) — the prod-affecting / destructive commands almost every project shares.
-# Add your own command families (e.g. `ssh`, a bespoke deploy CLI) to RISKY_WORDS, or trim
-# what you don't use.
+# tooling; further branches below gate `git`/`docker push`, `git clean`, recursive
+# `rm`, `find -delete`, package publishing, PR-merge/release via `gh`, and a deploy
+# script run by path. Add your own command families (e.g. `ssh`, a bespoke deploy
+# CLI) to RISKY_WORDS, or trim what you don't use — and mirror the change in
+# permissions.ask in .claude/settings.json.
 set -u
 
 # --- the watchlist: command words that should prompt before running ----------------
@@ -24,20 +32,36 @@ else
   cmd="$(python3 -c 'import sys, json; print(json.load(sys.stdin).get("tool_input", {}).get("command", ""))' 2>/dev/null)"
 fi
 
-# Couldn't read the command → stay neutral, let normal permission rules decide (fail safe).
+# Couldn't read the command → stay neutral, let normal permission rules decide.
 [ -z "$cmd" ] && exit 0
 
-# ERE, matched line-by-line: a risky word as a command (after start / space / ; & | () ;
-# plus `git … push` and `docker … push` allowing global options before the subcommand.
-re="(^|[[:space:];&|(])(${RISKY_WORDS})([[:space:]]|$)"
-re="$re"'|(^|[[:space:];&|(])(git|docker)([[:space:]]+(-[A-Za-z-]+|[-_A-Za-z0-9]+=[^[:space:]]+|-C[[:space:]]+[^[:space:]]+))*[[:space:]]+push([[:space:]]|$)'
-# recursive rm (rm -rf / -r / -fr, with any paths before the flag) — irreversible delete.
-re="$re"'|(^|[[:space:];&|(])rm([[:space:]]+[^-][^[:space:]]*)*[[:space:]]+-[A-Za-z]*[rR]'
+# A command word counts as "at a command position" after start-of-line, whitespace,
+# ; & | ( or a quote — and ends before whitespace, a quote, ) ; & | or end-of-line —
+# so `bash -c 'git push'` is still seen.
+b="(^|[[:space:];&|(\"'\`])"
+e="([[:space:];&|)\"'\`]|$)"
+# Global options that may sit between a tool and its subcommand (git -C dir push).
+opts='([[:space:]]+(-[A-Za-z-]+|[-_A-Za-z0-9]+=[^[:space:]]+|-C[[:space:]]+[^[:space:]]+))*'
+
+re="${b}(${RISKY_WORDS})${e}"
+# git push / git clean, docker push — allowing global options before the subcommand.
+re="$re|${b}git${opts}[[:space:]]+(push|clean)${e}"
+re="$re|${b}docker${opts}[[:space:]]+push${e}"
+# recursive rm (-r / -R / -fr / --recursive), with flags/paths in any order.
+re="$re|${b}rm([[:space:]]+[^[:space:]]+)*[[:space:]]+(-[A-Za-z]*[rR]|--recursive)"
+# find … -delete — irreversible bulk delete.
+re="$re|${b}find([[:space:]]+[^[:space:]]+)*[[:space:]]+-delete${e}"
+# package publishing — ships artifacts to a registry.
+re="$re|${b}(npm|pnpm|yarn|cargo|gem)([[:space:]]+[^[:space:]]+)*[[:space:]]+publish${e}"
+re="$re|${b}twine([[:space:]]+[^[:space:]]+)*[[:space:]]+upload${e}"
+# gh mutations that merge, ship, or destroy.
+re="$re|${b}gh[[:space:]]+(pr[[:space:]]+merge|repo[[:space:]]+delete|release[[:space:]]+(create|delete))${e}"
+re="$re|${b}gh[[:space:]]+api([[:space:]]+[^[:space:]]+)*[[:space:]]+(-X|--method)[[:space:]]+(POST|PUT|PATCH|DELETE)${e}"
 # a deploy script invoked by path, e.g. ./scripts/deploy.sh — a word-list can't see it.
-re="$re"'|(^|[[:space:];&|(])([./A-Za-z0-9_-]*/)?deploy(\.[A-Za-z]+)?([[:space:]]|$)'
+re="$re|${b}([./A-Za-z0-9_-]*/)?deploy(\.[A-Za-z]+)?${e}"
 
 if printf '%s\n' "$cmd" | grep -Eq "$re"; then
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Prod-affecting / destructive command — confirm before running."}}'
-else
-  printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
 fi
+# No match → no output: fall through to the normal permission flow.
+exit 0

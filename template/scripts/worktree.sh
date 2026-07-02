@@ -20,7 +20,7 @@
 #          (Multi-repo hubs only — a single-repo hub has no repos/* to worktree.)
 #
 # Usage:
-#   scripts/worktree.sh new  <name> [base]         # hub wt     -> ../<hub>-wt-<name>       on agent/<name> (base: main)
+#   scripts/worktree.sh new  <name> [base]         # hub wt     -> ../<hub>-wt-<name>       on agent/<name> (base: hub default branch)
 #   scripts/worktree.sh repo <name> <repo> [base]  # linked wt  -> <workspace>/<clone>-wt-<name> on agent/<name> (base: origin/<default>)
 #   scripts/worktree.sh ls                         # list every agent worktree (hub + linked)
 #   scripts/worktree.sh rm   <name>                # remove <name>'s worktrees, prune, drop the branch if merged
@@ -105,7 +105,8 @@ drop_branch() {  # <git_dir> <branch>
 
 cmd_new() {
   valid_name "${1:-}"
-  local name="$1" base="${2:-main}"
+  local name="$1" base="${2:-}"
+  [ -n "$base" ] || base="$(default_branch "$HUB_DIR")"
   local dir="${PARENT_DIR}/${HUB_BASE}-wt-${name}" branch="${BRANCH_PREFIX}/${name}"
   echo "hub workspace for agent '${name}':"
   add_worktree "$HUB_DIR" "$dir" "$branch" "$base"

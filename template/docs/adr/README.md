@@ -14,7 +14,7 @@ thing lost to time — and the most expensive to reconstruct.
 - Keep them short and honest. Record the options you rejected and *why* — that's the part
   future-you needs.
 - Link ADRs from [`../index.md`](../index.md) and reference them by number from
-  [`../../CLAUDE.md`](../../CLAUDE.md) invariants and [`../plan.md`](../plan.md).
+  [`../../AGENTS.md`](../../AGENTS.md) invariants and [`../plan.md`](../plan.md).
 
 ## Index
 

@@ -1,6 +1,6 @@
 # {{Decision title — a short, active statement of what was decided}}
 
-**Status:** {{proposed | accepted ({{date}}) | superseded by [ADR-000M](000M-….md)}}
+**Status:** {{proposed | accepted ({{date}}) | superseded by ADR-000M — link the file}}
 
 <!-- TEMPLATE: copy this file to 000N-kebab-title.md. State the decision in the title (e.g.
      "Use Postgres as the primary store", not "Database choice"). Keep it short and honest. -->
