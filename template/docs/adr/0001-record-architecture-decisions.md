@@ -24,7 +24,7 @@ them survives turnover, time, and the arrival of agents who weren't in the room.
   consequences.
 - Accepted ADRs aren't rewritten; a changed decision becomes a new ADR that supersedes the
   old one (with links both ways).
-- Invariants in `CLAUDE.md` and entries in the plan's decision register cite their ADR, so a
+- Invariants in `AGENTS.md` and entries in the plan's decision register cite their ADR, so a
   rule always traces back to its rationale.
 
 <!-- TEMPLATE: this ADR is generic and worth keeping as-is. Write your project's real

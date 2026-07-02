@@ -1,0 +1,51 @@
+name: template CI
+
+# The template tests itself: shellcheck on every shipped script, a table-driven
+# regression test of the risky-commands hook, and a full scaffold→verify smoke run
+# that generates a hub from template/ exactly the way SETUP.md prescribes.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: template-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: shellcheck all shipped scripts
+        run: |
+          shellcheck scripts/verify-hub.sh tests/*.sh \
+            template/scripts/*.sh template/.claude/hooks/*.sh
+
+  hook-and-scaffold:
+    name: hook table + scaffold smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: risky-commands hook regression table
+        run: tests/hook-test.sh
+      - name: scaffold a hub from template/ and verify it
+        run: tests/smoke-scaffold.sh
+
+  docs:
+    name: markdownlint + link check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+      - name: markdownlint (template's own config)
+        run: npx --yes markdownlint-cli2@0.22.1 --config template/.markdownlint-cli2.jsonc "**/*.md"
+      - name: lychee (relative-link integrity, offline)
+        uses: lycheeverse/lychee-action@82202e5e9c2f4ef1a55a3d02563e1cb6041e5332 # v2.4.1
+        with:
+          args: --offline --no-progress "./**/*.md"
+          fail: true

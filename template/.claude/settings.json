@@ -1,6 +1,27 @@
 {
   "permissions": {
-    "allow": []
+    "allow": [
+      "Bash(make status)",
+      "Bash(make list)",
+      "Bash(make help)",
+      "Bash(make worktree-ls)",
+      "Bash(scripts/repos.sh --status)",
+      "Bash(scripts/repos.sh --list)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(docker push:*)",
+      "Bash(aws:*)",
+      "Bash(gcloud:*)",
+      "Bash(az:*)",
+      "Bash(kubectl:*)",
+      "Bash(helm:*)",
+      "Bash(terraform:*)",
+      "Bash(terragrunt:*)"
+    ],
+    "additionalDirectories": [
+      "{{CLONE_WORKSPACE}}"
+    ]
   },
   "hooks": {
     "PreToolUse": [
@@ -10,6 +31,16 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/ask-before-risky-commands.sh\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-brief.sh\""
           }
         ]
       }

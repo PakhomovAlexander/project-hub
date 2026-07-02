@@ -19,21 +19,28 @@ This template is a battle-tested shape for that cockpit, designed so you can han
 Most "AI in the repo" setups give the agent a `CLAUDE.md` and hope. A hub goes further:
 
 - **`CONTEXT.md`** — a real glossary (ubiquitous language) so the agent uses *your* words.
-- **`CLAUDE.md`** — the working agreement: invariants the agent must never break, plus
-  PR/CI, verification, and doc-honesty discipline.
-- **`AGENTS.md`** — a vendor-neutral pointer to `CLAUDE.md`, so agents beyond Claude Code
-  (Cursor, Codex, …) drive the hub from the same rules — one source of truth, no drift.
+- **`AGENTS.md`** — the working agreement: invariants the agent must never break, plus
+  PR/CI, verification, and doc-honesty discipline. It's the vendor-neutral standard file,
+  so Codex, Cursor, Gemini CLI & co. load it natively.
+- **`CLAUDE.md`** — a thin adapter importing `AGENTS.md` + `CONTEXT.md`, so Claude Code
+  deterministically loads the same rules *and* the glossary — one source of truth, no drift.
+- **`.agents/skills/`** — the hub's processes as executable skills (open Agent Skills
+  format): `/adr`, `/tracker`, `/resume`, `/onboard-repo`, `/verify`.
 - **`docs/adr/`** — decisions recorded with options + consequences, superseding over time.
-- **`docs/tracker.md`** — a living status board: what's true *right now*, dated.
+- **`docs/tracker.md`** — a living status board: what's true *right now*, dated — and a
+  session-start hook that briefs every new session on it (and flags it when stale).
 - **`docs/workstreams/`** — deep design docs for in-flight work, with "resume here" sections.
 - **`docs/service-catalog.md`** — a tiered, agent-facing map of every service/repo + doc
-  status, so a session looks a thing up instead of re-deriving it.
+  status (each repo doc leads with its dev loop), so a session looks a thing up instead of
+  re-deriving it.
 - **`scripts/repos.sh` + `repos.manifest`** — link many live repos into `repos/` as symlinks.
 - **`scripts/worktree.sh`** — run several agents over one hub at once, each in its own git
   worktree, without branch/index collisions.
-- **`.claude/`** — a safety hook that prompts before prod/destructive commands.
-- **`.github/` docs CI** — markdownlint + an offline link check on every PR, so the docs
-  can't silently rot.
+- **`.claude/settings.json` + hooks** — layered guardrails: safe hub commands pre-allowed,
+  risky families prompt first (declarative `ask` rules backed by a wrapper-aware hook that
+  never widens your own permission config).
+- **`.github/` docs CI + `scripts/verify.sh`** — markdownlint + an offline link check on
+  every PR, and the same checks runnable locally, so the docs can't silently rot.
 
 The result: an agent can pick up cold work, speak your domain, respect your rules, not nuke
 prod, and run alongside a dozen of its peers — and a human can read the whole project's state
@@ -64,14 +71,15 @@ cd project-hub-template
 ```
 your-project-hub/
 ├── CONTEXT.md              # shared language / glossary — read first
-├── CLAUDE.md              # working agreement + invariants for agents
-├── AGENTS.md             # vendor-neutral entry point → CLAUDE.md (any agent)
-├── README.md             # the hub's own front door
-├── TEAM.md               # people ↔ GitHub ↔ ownership (optional)
-├── Makefile · scripts/   # link/clone/status the repos · worktrees for parallel agents
-├── repos.manifest        # the list of repos this hub coordinates
-├── .claude/              # settings + the prompt-before-risky-commands hook
-├── .github/workflows/    # docs CI: markdownlint + offline link check
+├── AGENTS.md              # the working agreement — canonical rules for ANY agent
+├── CLAUDE.md              # thin Claude Code adapter: imports AGENTS.md + CONTEXT.md
+├── README.md              # the hub's own front door
+├── TEAM.md                # people ↔ GitHub ↔ ownership (optional)
+├── Makefile · scripts/    # link/status the repos · worktrees · verify.sh self-check
+├── repos.manifest         # the list of repos this hub coordinates
+├── .agents/skills/        # /adr /tracker /resume /onboard-repo /verify (any agent)
+├── .claude/               # allow/ask permission lists + hooks (session brief, risky-cmd gate)
+├── .github/workflows/     # docs CI: markdownlint + offline link check
 ├── .markdownlint-cli2.jsonc # light, high-signal Markdown rules
 ├── docs/
 │   ├── index.md          # map of all docs
@@ -82,7 +90,7 @@ your-project-hub/
 │   ├── parallel-agents.md# running several agents at once via git worktrees
 │   ├── adr/              # architecture decision records (+ a seed ADR + a template)
 │   ├── workstreams/      # in-flight work: design + acceptance + resume-here
-│   └── repos/            # one Tier-1 reference per linked repo
+│   └── repos/            # one Tier-1 reference per linked repo (dev loop first)
 └── repos/                # symlinks into your real clones (gitignored)
 ```
 
@@ -96,8 +104,12 @@ invariants, the ADRs, and the safety hook.
 - [`template/`](template/) — the hub skeleton (placeholders + inline guidance) that gets
   copied and customized into your new hub.
 - [`scripts/verify-hub.sh`](scripts/verify-hub.sh) — run it against a generated hub to catch
-  leftover placeholders, broken internal links, and a non-executable safety hook before
-  calling setup done.
+  leftover placeholders, broken internal links (including links into gitignored `repos/`),
+  and non-executable hooks before calling setup done. The same verifier ships *inside*
+  every hub as `scripts/verify.sh`.
+- [`tests/`](tests/) + [`.github/workflows/template-ci.yml`](.github/workflows/template-ci.yml)
+  — the template tests itself on every PR: shellcheck, a table-driven test of the safety
+  hook, and a full scaffold-then-verify smoke run.
 
 ## Why it works
 

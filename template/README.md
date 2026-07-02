@@ -7,8 +7,9 @@ The cockpit for **{{PROJECT_NAME}}** — {{PROJECT_TAGLINE}}. Project management
 workflow across the key repos, driven from one place.
 
 This repo holds the **docs and the controls**, not the product code. The product code lives
-in the key repos below; this hub links them into [`repos/`](repos/) so you can read, build,
-review, and ship them without leaving the cockpit. Read [`CONTEXT.md`](CONTEXT.md) first.
+in the key repos below; this hub links them into `repos/` (gitignored — recreated by
+`make repos`) so you can read, build, review, and ship them without leaving the cockpit.
+Read [`CONTEXT.md`](CONTEXT.md) first.
 
 ## Key repos
 
@@ -30,11 +31,13 @@ back.
 {{PROJECT_NAME}}-hub/
 ├── CONTEXT.md              # shared language / glossary (read this first)
 ├── README.md              # you are here
-├── CLAUDE.md              # working agreement for agents in this repo
-├── AGENTS.md              # vendor-neutral entry point → CLAUDE.md (any agent)
+├── AGENTS.md              # the working agreement — canonical rules for ANY agent
+├── CLAUDE.md              # thin Claude Code adapter: imports AGENTS.md + CONTEXT.md
 ├── TEAM.md                # people ↔ GitHub ↔ ownership
-├── Makefile · scripts/    # link/clone/status the key repos · worktrees for parallel agents
+├── Makefile · scripts/    # link/status the key repos · worktrees · verify.sh self-check
 ├── repos.manifest         # the list of repos this hub coordinates
+├── .agents/skills/        # executable hub processes: /adr /tracker /resume … (any agent)
+├── .claude/               # settings (allow/ask lists) + hooks (session brief, risky-cmd gate)
 ├── docs/
 │   ├── index.md           # map of all docs
 │   ├── plan.md            # the master plan
@@ -72,4 +75,4 @@ make worktree-rm NAME=tracker # tear it down when the PR merges
 1. [`CONTEXT.md`](CONTEXT.md) — the language.
 2. [`docs/plan.md`](docs/plan.md) — the master plan.
 3. [`docs/tracker.md`](docs/tracker.md) — what's in flight right now.
-4. [`CLAUDE.md`](CLAUDE.md) — the working agreement before you change anything.
+4. [`AGENTS.md`](AGENTS.md) — the working agreement before you change anything.

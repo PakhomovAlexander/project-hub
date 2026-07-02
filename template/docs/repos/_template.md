@@ -15,6 +15,17 @@
 > _{{Confirmed = read from source on {{date}}; inferred items marked. Verify before relying
 > on specifics.}}_
 
+## Dev loop
+
+<!-- TEMPLATE: the single most valuable section for an agent about to touch this repo.
+     Fill it from the repo's own README / CI config / Makefile — and say where you read it.
+     One command per line; add a "run a single test" form if the runner has one. -->
+
+- **Build:** `{{command}}`
+- **Test:** `{{command}}` — single test: `{{command}}`
+- **Lint / format:** `{{command}}`
+- **Run locally:** `{{command, and where it comes up (port/URL) if relevant}}`
+
 ## What it does
 
 {{2–4 sentences: its role in {{PROJECT_NAME}} and the surfaces/APIs it owns.}}

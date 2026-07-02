@@ -64,3 +64,26 @@ pushed/merged, re-run — or `FORCE=1 make worktree-rm NAME=tracker` to discard.
 - **One writer per linked repo**, unless you've given them separate worktrees.
 - Branch per agent (`agent/<name>`), PR per task — same discipline as the rest of the hub.
 - Tear down when the PR merges, so stale worktrees don't pile up (`make worktree-ls` to audit).
+- **`docs/tracker.md` is the hub's hottest file.** Pull/rebase right before editing it and
+  keep tracker updates in their own small commits, so parallel agents' PRs don't conflict.
+- **Serialize git operations across worktrees of one repo.** Worktrees share a single
+  object store — simultaneous `fetch`/`gc`/`rebase` from two agents can corrupt shared
+  metadata. Stagger them.
+
+## Hub context doesn't follow you into a linked repo
+
+`AGENTS.md` / `CLAUDE.md` and the `.claude/` guardrails load from the directory an agent is
+**launched in**. A session started inside a linked repo — or its private worktree from
+`make worktree-repo` — gets that repo's own agent files, **not** the hub's working
+agreement and **not** the hub's risky-command gate. Two consequences:
+
+- Give each linked repo a thin `AGENTS.md` pointing back at this hub (the setup runbook
+  offers to create these), so the invariants travel.
+- Prefer launching agents from the hub (or a hub worktree) when a task spans repos.
+
+## Native alternatives
+
+Some agent CLIs now manage worktrees themselves — e.g. Claude Code's background agents run
+each task in an auto-created worktree. These scripts stay useful where that doesn't reach:
+they're vendor-neutral, they cover the shared-clone linked-repo case (`make worktree-repo`),
+and they give you explicit lifecycle control (`make worktree-ls` / `make worktree-rm`).

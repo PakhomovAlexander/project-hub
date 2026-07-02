@@ -40,8 +40,10 @@ Reserve **Tier-2** for subsystems with a real cross-service flow worth tracing e
 
 - **Honesty:** mark **confirmed** (read from source) vs **inferred**; date the read; end with
   "verify before relying on specifics." If the source isn't in the workspace, say so.
-- **Cite hub-relative paths** (`repos/<repo>/...`) so links are navigable from the hub, and
-  keep them green (`docs CI` runs markdownlint + an offline link check).
+- **Cite paths into linked repos as inline code** (`repos/<repo>/...`), never as markdown
+  links — `repos/` is gitignored, so links into it break docs CI and fresh clones. Links
+  between the hub's own tracked docs stay real links, kept green by docs CI (markdownlint +
+  an offline link check) and `scripts/verify.sh`.
 - **Note the invariants** that apply to each service (link the ADR), and its **deploy status /
   gap** — the thing an agent most needs before touching it.
 - **Don't duplicate the repo:** link to code, don't transcribe it. Capture what's *not*

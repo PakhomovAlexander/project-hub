@@ -1,85 +1,21 @@
-# Working agreement — {{PROJECT_NAME}} Project Hub
+@AGENTS.md
+@CONTEXT.md
 
-<!-- TEMPLATE: The operating contract for any agent working in this hub. Keep it SHORT and
-     CONCRETE — rules an agent can actually follow and you could test. Delete sections that
-     don't apply (e.g. the linked-repos section for a single-repo project). Remove these
-     TEMPLATE comments as you fill it in. -->
+# Claude Code notes — {{PROJECT_NAME}} Project Hub
 
-This repo is the **cockpit** for {{PROJECT_NAME}}. It holds the docs and controls; the
-product code lives in the linked repos under `repos/`. Read [`CONTEXT.md`](CONTEXT.md) for
-the language before doing anything.
+<!-- TEMPLATE: keep this file THIN. The working agreement lives in AGENTS.md and the
+     glossary in CONTEXT.md — both are imported above, so every Claude Code session loads
+     them automatically. Don't copy rules here: one source of truth, no drift. Only
+     genuinely Claude-specific wiring belongs below. Remove this comment. -->
 
-## The repos under `repos/` are live working copies
+The two imports above are binding: [`AGENTS.md`](AGENTS.md) is the **working agreement**,
+[`CONTEXT.md`](CONTEXT.md) the **shared language**. What follows is Claude Code wiring only.
 
-<!-- TEMPLATE: DELETE this section for a single-repo project — but keep the worktree bullet
-     (parallel agents on the hub's own docs still collide on one checkout); move it up. -->
-
-`repos/<name>` is a **symlink to the real clone** in `{{CLONE_WORKSPACE}}`. Editing a file
-there edits that working copy **on whatever branch it currently has checked out**.
-
-- Run `make status` first — know each repo's branch and dirty state before you touch it.
-- Don't switch branches or stash in a linked repo without saying so; the user may have
-  in-flight work there (feature branches, uncommitted changes).
-- These are separate git repos. Commit/push happens **inside** `repos/<name>`, against
-  `{{ORG}}/<name>` — not from the hub. The hub commits only its own docs/tooling.
-- **Running several agents over the hub at once?** Give each its own `git worktree` — one
-  checkout has a single branch + index, so parallel agents collide. See
-  [`docs/parallel-agents.md`](docs/parallel-agents.md) (`make worktree` / `make worktree-repo`).
-
-## Invariants (don't break these)
-
-<!-- TEMPLATE: The 2–6 hard rules specific to THIS project — the ones that, if violated,
-     cause real damage or rework. Make each concrete and checkable. Examples of the *shape*
-     (replace entirely): a naming/isolation rule, a security boundary, a "never touch X",
-     a routing/deploy rule. Link each to its ADR where one exists. -->
-
-- **{{Invariant 1}}** ({{ADR-000X}}): {{the rule, stated concretely, with the exact
-  boundary — what's forbidden and what's explicitly exempt.}}
-- **{{Invariant 2}}**: {{rule.}}
-- **{{Invariant 3}}**: {{rule.}}
-
-## PR / CI discipline
-
-After any push or PR, **always** check CI and don't call it done until green:
-
-```
-gh pr view <number> --repo {{ORG}}/<repo> --json statusCheckRollup
-```
-
-- CI running → wait and recheck. CI failed → read logs, fix, push, wait for green.
-- **Always paste the full PR URL** (`https://github.com/{{ORG}}/<repo>/pull/<n>`), not just
-  the number, so it's clickable.
-
-## Verification
-
-Run what you build before reporting it done. Type-checks and tests verify code correctness,
-not feature correctness — if you can't run it, say so explicitly rather than claiming
-success. <!-- TEMPLATE: add project-specific dry-run guidance, e.g. for infra prefer
-`terraform plan` / `helm template` / `kubectl --dry-run` over asserting an outcome. -->
-
-## Changes land as code
-
-<!-- TEMPLATE: KEEP this for a project whose live state is reconciled from git (GitOps/ArgoCD,
-     Terraform, declarative deploys) — out-of-band edits get reverted, so "done" must mean
-     merged code. DELETE it for a project where this doesn't apply. Promote it to an ADR if
-     it's a load-bearing decision. -->
-
-Git is the source of truth for {{the reconciled surface — infra / deploy config / …}}. A
-change isn't done until it's **expressed as code and merged**. Debugging live out-of-band
-(a console edit, `kubectl edit`, an admin API) is fine **to confirm a fix** — but that's a
-**probe, not the change**: the next reconcile/redeploy reverts it. Backfill the probe into
-code and land it via PR; its issue isn't `status:merged` until that PR is.
-
-## Issue lifecycle
-
-<!-- TEMPLATE: adjust to where the backlog actually lives. -->
-
-Backlog is {{GitHub Issues / Jira / docs/tracker.md}}. **Don't close an issue when its PR
-merges** — mark it `status:merged`, then close only after a human verifies it in prod. See
-[`docs/issue-lifecycle.md`](docs/issue-lifecycle.md).
-
-## Keeping docs honest
-
-If you hit a factual error here (stale path, wrong command, a status that's moved), fix it
-in the same change — especially [`docs/tracker.md`](docs/tracker.md), which is only useful
-if it's current. Don't open cosmetic/rewording PRs.
+- Guardrails live in [`.claude/settings.json`](.claude/settings.json): safe hub commands
+  are pre-allowed, risky families prompt before running (`permissions.ask` plus the
+  PreToolUse hook), and `additionalDirectories` grants access to the linked clones in
+  `{{CLONE_WORKSPACE}}`.
+- Every session opens with a **hub brief** — tracker snapshot age + linked-repo status —
+  injected by `.claude/hooks/session-brief.sh`.
+- Skills: `/adr` · `/tracker` · `/resume` · `/onboard-repo` · `/verify`, loaded from
+  [`.agents/skills/`](.agents/skills/) via the `.claude/skills` link.

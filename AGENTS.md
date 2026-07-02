@@ -15,4 +15,5 @@ runbook. Read it top to bottom, interview the user, and generate a customized hu
   into a generated hub. A generated hub gets its own agent files from `template/` (both
   `AGENTS.md` and `CLAUDE.md`).
 
-`CLAUDE.md` mirrors this file so Claude Code lands on the same runbook.
+This file is canonical; `CLAUDE.md` imports it (`@AGENTS.md`) so Claude Code lands on the
+same runbook as every other agent — the same single-source pattern a generated hub uses.
