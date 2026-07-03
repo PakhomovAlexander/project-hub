@@ -6,4 +6,5 @@ single-sourced in [`AGENTS.md`](AGENTS.md) — the same pattern a generated hub 
 same runbook as every other agent).
 
 **If you were asked to "set up a project hub" (or "set up `<X>`"): follow
-[`SETUP.md`](SETUP.md).**
+[`SETUP.md`](SETUP.md). If you were asked to update an already-generated hub: follow
+[`UPDATE.md`](UPDATE.md).**

@@ -25,7 +25,7 @@ Most "AI in the repo" setups give the agent a `CLAUDE.md` and hope. A hub goes f
 - **`CLAUDE.md`** — a thin adapter importing `AGENTS.md` + `CONTEXT.md`, so Claude Code
   deterministically loads the same rules *and* the glossary — one source of truth, no drift.
 - **`.agents/skills/`** — the hub's processes as executable skills (open Agent Skills
-  format): `/adr`, `/tracker`, `/resume`, `/onboard-repo`, `/verify`.
+  format): `/adr`, `/tracker`, `/resume`, `/onboard-repo`, `/verify`, `/update-hub`.
 - **`docs/adr/`** — decisions recorded with options + consequences, superseding over time.
 - **`docs/tracker.md`** — a living status board: what's true *right now*, dated — and a
   session-start hook that briefs every new session on it (and flags it when stale).
@@ -66,6 +66,18 @@ cd project-hub-template
 # then, in Claude Code:  "Follow SETUP.md and scaffold a hub for <my project>."
 ```
 
+## Keep a hub current
+
+The template keeps improving after you scaffold. Every generated hub records where it
+came from in `.hub-meta.yml` (template URL + commit + your setup answers), so later —
+inside the hub — you can just say:
+
+> *"Update this hub from its template."* (or run the `/update-hub` skill)
+
+The agent follows [`UPDATE.md`](UPDATE.md): it diffs `template/` since the recorded
+commit and re-applies the changes with your hub's own values — machinery (scripts, hooks,
+skills, CI) updates cleanly; the docs you've authored are never overwritten.
+
 ## What you get
 
 ```
@@ -75,6 +87,7 @@ your-project-hub/
 ├── CLAUDE.md              # thin Claude Code adapter: imports AGENTS.md + CONTEXT.md
 ├── README.md              # the hub's own front door
 ├── TEAM.md                # people ↔ GitHub ↔ ownership (optional)
+├── .hub-meta.yml          # provenance: template url + sha + answers — powers /update-hub
 ├── Makefile · scripts/    # link/status the repos · worktrees · verify.sh self-check
 ├── repos.manifest         # the list of repos this hub coordinates
 ├── .agents/skills/        # /adr /tracker /resume /onboard-repo /verify (any agent)
@@ -101,6 +114,9 @@ invariants, the ADRs, and the safety hook.
 
 - [`SETUP.md`](SETUP.md) — the runbook an agent follows to scaffold a hub (both `AGENTS.md`
   and `CLAUDE.md` point here). Read it to see exactly what the agent will do.
+- [`UPDATE.md`](UPDATE.md) — the runbook an agent follows to bring an already-generated hub
+  up to date with this template: a three-way merge driven by the hub's `.hub-meta.yml`,
+  updating machinery without overwriting the hub's own docs.
 - [`template/`](template/) — the hub skeleton (placeholders + inline guidance) that gets
   copied and customized into your new hub.
 - [`scripts/verify-hub.sh`](scripts/verify-hub.sh) — run it against a generated hub to catch
@@ -109,7 +125,8 @@ invariants, the ADRs, and the safety hook.
   every hub as `scripts/verify.sh`.
 - [`tests/`](tests/) + [`.github/workflows/template-ci.yml`](.github/workflows/template-ci.yml)
   — the template tests itself on every PR: shellcheck, a table-driven test of the safety
-  hook, and a full scaffold-then-verify smoke run.
+  hook, a full scaffold-then-verify smoke run, and an update drill (scaffold at v1 →
+  evolve the template → apply the UPDATE.md mechanics → verify).
 
 ## Why it works
 

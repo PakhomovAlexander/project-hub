@@ -34,6 +34,7 @@ back.
 ├── AGENTS.md              # the working agreement — canonical rules for ANY agent
 ├── CLAUDE.md              # thin Claude Code adapter: imports AGENTS.md + CONTEXT.md
 ├── TEAM.md                # people ↔ GitHub ↔ ownership
+├── .hub-meta.yml          # where this hub came from — powers /update-hub
 ├── Makefile · scripts/    # link/status the key repos · worktrees · verify.sh self-check
 ├── repos.manifest         # the list of repos this hub coordinates
 ├── .agents/skills/        # executable hub processes: /adr /tracker /resume … (any agent)
@@ -69,6 +70,13 @@ make worktree NAME=tracker    # isolated hub workspace on branch agent/tracker
 make worktree-ls              # list every agent worktree
 make worktree-rm NAME=tracker # tear it down when the PR merges
 ```
+
+## Staying current with the template
+
+This hub was generated from a Project Hub template; [`.hub-meta.yml`](.hub-meta.yml)
+records which one and at what commit. When the template improves, run the `/update-hub`
+skill — it fetches the template, diffs since the recorded commit, and re-applies the
+changes without touching this hub's own docs.
 
 ## Where to read next
 
