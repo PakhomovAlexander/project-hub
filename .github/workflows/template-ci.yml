@@ -37,6 +37,8 @@ jobs:
         run: tests/smoke-scaffold.sh
       - name: evolve the template and update a generated hub (UPDATE.md mechanics)
         run: tests/smoke-update.sh
+      - name: self-review-heavy scripts behavioral smoke
+        run: tests/smoke-srh.sh
 
   docs:
     name: markdownlint + link check
