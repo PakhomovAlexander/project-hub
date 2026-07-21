@@ -42,7 +42,7 @@ while [ $# -gt 0 ]; do
     *) echo "codex-review.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ] || { echo "codex-review.sh: --prompt-file is required and must exist" >&2; exit 2; }
+if [ -z "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then echo "codex-review.sh: --prompt-file is required and must exist" >&2; exit 2; fi
 [ -n "$OUT" ] || { echo "codex-review.sh: --out is required" >&2; exit 2; }
 command -v codex >/dev/null || { echo "codex-review.sh: codex CLI not found" >&2; exit 127; }
 

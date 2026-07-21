@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
     *) echo "checks.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$FILE" ] && [ -f "$FILE" ] || { echo "checks.sh: --file is required and must exist" >&2; exit 2; }
+if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then echo "checks.sh: --file is required and must exist" >&2; exit 2; fi
 [ -n "$OUT" ] || { echo "checks.sh: --out is required" >&2; exit 2; }
 mkdir -p "$OUT/checks"
 
