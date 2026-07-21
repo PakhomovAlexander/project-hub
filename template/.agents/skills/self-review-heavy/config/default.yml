@@ -1,0 +1,63 @@
+# self-review-heavy — default profile.
+#
+# The ORCHESTRATING AGENT reads this file; scripts never parse YAML (they take
+# flags). A run resolves its config in this order, later wins:
+#   1. this file
+#   2. a repo profile from this directory (picked by target repo, or --profile)
+#   3. inline overrides in the invocation ("2 rounds", "skip cross", "model X")
+version: 1
+
+goal: >
+  Ship-quality gate for a non-trivial change: correctness first, performance
+  second, maintainability third. Reviewers exist to find real problems, not to
+  produce commentary.
+
+# Facts reviewers must take as given — they must not re-litigate these.
+assumptions: []
+
+scope:
+  base: auto              # diff base ref; auto = origin/master | origin/main
+  uncommitted: false      # include working-tree changes in the bundle
+  path_filters: []        # optional globs; empty = the whole diff
+
+# Rule sources injected into every review stage, in order. Point at existing
+# rulebooks (repo review skills, AGENTS.md files) instead of restating rules.
+rules: []
+
+# Stage-1 gate checks. Each: name, cmd (may contain {placeholders} the
+# orchestrator fills from the bundle), required. A failed required check blocks
+# stages 2-3 until fixed.
+checks: []
+
+benchmarks:
+  policy: on-demand       # never | on-demand (a reviewer demands proof) | always
+  runner: ""              # where/how benchmarks run — free text the orchestrator follows
+  recipe: ""              # pointer to the canonical recipe (doc, PR, script)
+
+# Stages run in order each round. runner: subagent → spawn the named agent
+# definition (Claude Code: .claude/agents/<agent>.md; other harnesses: any
+# runner with the same model tier + reasoning effort). runner: codex →
+# scripts/codex-review.sh.
+stages:
+  - id: gate              # stage 1 — light review: diff sanity, checks green, related tests pass
+    runner: subagent
+    agent: srh-gate       # → opus, effort high
+    rubric: references/stage-1-gate.md
+    required: true
+  - id: deep              # stage 2 — architecture / performance / conceptual review
+    runner: subagent
+    agent: srh-deep-reviewer  # → fable, effort max
+    rubric: references/stage-2-deep.md
+  - id: cross             # stage 3 — cross-model second opinion
+    runner: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    mode: exec            # exec = structured findings JSON; review = codex's native reviewer
+    rubric: references/stage-3-cross.md
+
+iterations:
+  max_rounds: 3           # hard cap on full review loops
+  clean_rounds: 1         # stop after this many consecutive rounds with no new findings
+  gate_each_round: true   # re-run the stage-1 gate after applying fixes
+
+severity_gate: major      # open findings at/above this severity block convergence

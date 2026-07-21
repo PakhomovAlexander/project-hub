@@ -23,7 +23,8 @@ jobs:
       - name: shellcheck all shipped scripts
         run: |
           shellcheck scripts/verify-hub.sh tests/*.sh \
-            template/scripts/*.sh template/.claude/hooks/*.sh
+            template/scripts/*.sh template/.claude/hooks/*.sh \
+            template/.agents/skills/*/scripts/*.sh
 
   hook-and-scaffold:
     name: hook table + scaffold smoke

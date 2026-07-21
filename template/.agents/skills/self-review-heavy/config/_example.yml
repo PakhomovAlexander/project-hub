@@ -1,0 +1,46 @@
+# self-review-heavy — example repo profile. Copy to <repo>.yml and fill the
+# <angle-bracket> values. This one shows the shape for a native/C++ engine
+# that builds and tests on a remote host; delete what doesn't apply.
+version: 1
+extends: default.yml
+
+goal: >
+  <what "ship-quality" means for this repo — e.g.: a correctness bug blocks,
+  and an unproven performance claim on a hot path also blocks; performance
+  claims are settled by measurement, not argument.>
+
+assumptions:
+  - <facts reviewers must take as given, so they don't re-litigate them —
+    e.g. "CI perf jobs don't run for this fork; local benchmarks are the
+    performance evidence channel">
+
+rules:
+  - <path to this repo's own review rulebook, if it has one>
+  - <path to its coding-rules file (AGENTS.md / CLAUDE.md / CONTRIBUTING)>
+
+checks:
+  - name: build
+    cmd: ssh <build-host> 'cd <checkout> && <build command> 2>&1 | tail -30'
+    required: true
+  # {tests} = selectors the gate fills from the bundle's tests_changed.txt,
+  # the plausible tests_candidates.txt entries, and tests the change adds.
+  - name: tests-related
+    cmd: ssh <build-host> 'cd <checkout> && <test runner> {tests} 2>&1 | tail -40'
+    required: true
+
+benchmarks:
+  policy: on-demand      # never | on-demand | always
+  runner: >
+    <where and how benchmarks run — machine, build type, profiling tools.
+    Pin the dataset and run counts; report old-vs-new with variance across
+    runs, never a single run; verify result equivalence alongside timings.>
+  recipe: >
+    <pointer to the canonical recipe: a doc, the PR that established it,
+    or a script>
+
+# Repo-specific reviewer emphasis, appended to the stage 2/3 rubrics.
+emphasis:
+  - <e.g. hot paths — per-row work in inner loops: allocations, virtual
+    dispatch, branch behavior, memory locality>
+  - <e.g. compile-time impact of headers in a large-TU-count codebase>
+  - <e.g. the degenerate inputs this system commonly sees>

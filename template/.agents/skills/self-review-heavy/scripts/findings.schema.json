@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "self-review-heavy findings",
+  "type": "object",
+  "required": ["verdict", "findings"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "request-changes", "block"]
+    },
+    "summary": {
+      "type": "string",
+      "description": "One paragraph: what the change does and the reviewer's overall judgement."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "file", "title", "body", "confidence"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["blocker", "major", "minor"] },
+          "file": { "type": "string", "description": "Repo-relative path" },
+          "line": { "type": "integer" },
+          "title": {
+            "type": "string",
+            "description": "One sentence, stable wording — used to fingerprint the finding across rounds"
+          },
+          "body": {
+            "type": "string",
+            "description": "Evidence: the concrete failure scenario or step-by-step trace that makes this real, not hypothetical"
+          },
+          "fix": { "type": "string", "description": "Suggested fix, minimal" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "benchmark_demands": {
+      "type": "array",
+      "description": "Performance claims that must be proven by measurement before the verdict can improve",
+      "items": {
+        "type": "object",
+        "required": ["claim", "why", "suggested_method"],
+        "properties": {
+          "claim": { "type": "string" },
+          "why": { "type": "string" },
+          "suggested_method": { "type": "string" }
+        }
+      }
+    },
+    "disputes": {
+      "type": "array",
+      "description": "Positions on findings from earlier stages (given in the prompt as fp=... entries)",
+      "items": {
+        "type": "object",
+        "required": ["fp", "position", "reason"],
+        "properties": {
+          "fp": { "type": "string" },
+          "position": { "type": "string", "enum": ["confirm", "refute"] },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

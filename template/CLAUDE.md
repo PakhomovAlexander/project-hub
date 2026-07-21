@@ -17,5 +17,7 @@ The two imports above are binding: [`AGENTS.md`](AGENTS.md) is the **working agr
   `{{CLONE_WORKSPACE}}`.
 - Every session opens with a **hub brief** — tracker snapshot age + linked-repo status —
   injected by `.claude/hooks/session-brief.sh`.
-- Skills: `/adr` · `/tracker` · `/resume` · `/onboard-repo` · `/verify` · `/update-hub`,
-  loaded from [`.agents/skills/`](.agents/skills/) via the `.claude/skills` link.
+- Skills: `/adr` · `/tracker` · `/resume` · `/onboard-repo` · `/verify` · `/update-hub` ·
+  `/self-review-heavy`, loaded from [`.agents/skills/`](.agents/skills/) via the
+  `.claude/skills` link. `/self-review-heavy`'s stage runners are the `srh-gate` and
+  `srh-deep-reviewer` agents in [`.claude/agents/`](.claude/agents/).
