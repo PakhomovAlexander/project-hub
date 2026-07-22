@@ -169,10 +169,14 @@ Work through the copied skeleton and make it real:
 - **`CLAUDE.md`** — leave it thin: keep the `@AGENTS.md` + `@CONTEXT.md` imports at the
   top, resolve the placeholders, and that's it. The rules live in `AGENTS.md` only, never
   duplicated here. (Single-repo: trim the linked-clones phrase from the guardrails bullet.)
-- **`.agents/skills/`** — the six skills are generic; keep them as-is. Single-repo
+- **`.agents/skills/`** — the seven skills are generic; keep them as-is. Single-repo
   project: delete `onboard-repo/` (but keep `update-hub/` — it's how the hub takes
-  template upgrades later). If the team has other recurring processes, add one skill
-  per process (a directory + `SKILL.md`, `name` matching the directory).
+  template upgrades later). `/self-review-heavy` is the heavy pre-PR review pipeline —
+  it needs `jq` (plus the codex CLI for its cross-model stage); wire a
+  `config/<repo>.yml` profile per repo when you adopt it (`config/_example.yml` shows
+  the shape), or delete the directory and record it in `dropped:` if you won't use it.
+  If the team has other recurring processes, add one skill per process (a directory +
+  `SKILL.md`, `name` matching the directory).
 - **`.claude/settings.json`** — resolve `{{CLONE_WORKSPACE}}` in
   `permissions.additionalDirectories` (single-repo: delete that key and the
   `make`/`repos.sh` entries in `permissions.allow`). Mirror the user's risky families into

@@ -25,7 +25,10 @@ Most "AI in the repo" setups give the agent a `CLAUDE.md` and hope. A hub goes f
 - **`CLAUDE.md`** — a thin adapter importing `AGENTS.md` + `CONTEXT.md`, so Claude Code
   deterministically loads the same rules *and* the glossary — one source of truth, no drift.
 - **`.agents/skills/`** — the hub's processes as executable skills (open Agent Skills
-  format): `/adr`, `/tracker`, `/resume`, `/onboard-repo`, `/verify`, `/update-hub`.
+  format): `/adr`, `/tracker`, `/resume`, `/onboard-repo`, `/verify`, `/update-hub`,
+  `/self-review-heavy` (a staged multi-model pre-PR review pipeline: local gate → deep
+  architecture/perf review → cross-model second opinion, iterated to convergence on a
+  findings ledger, with benchmark demands for performance claims).
 - **`docs/adr/`** — decisions recorded with options + consequences, superseding over time.
 - **`docs/tracker.md`** — a living status board: what's true *right now*, dated — and a
   session-start hook that briefs every new session on it (and flags it when stale).
@@ -90,7 +93,7 @@ your-project-hub/
 ├── .hub-meta.yml          # provenance: template url + sha + answers — powers /update-hub
 ├── Makefile · scripts/    # link/status the repos · worktrees · verify.sh self-check
 ├── repos.manifest         # the list of repos this hub coordinates
-├── .agents/skills/        # /adr /tracker /resume /onboard-repo /verify (any agent)
+├── .agents/skills/        # /adr /tracker /resume /onboard-repo /verify /self-review-heavy (any agent)
 ├── .claude/               # allow/ask permission lists + hooks (session brief, risky-cmd gate)
 ├── .github/workflows/     # docs CI: markdownlint + offline link check
 ├── .markdownlint-cli2.jsonc # light, high-signal Markdown rules
