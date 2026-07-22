@@ -152,6 +152,19 @@ rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
 [ "$rc" -eq 1 ] || fail "manually contested escalated re-report must block (rc=$rc)"
 pass "open findings escalate in place; rejected ones never auto-reopen but adopt evidence"
 
+# Adoption must not be once-per-round: stages ingest separately, and the
+# SECOND same-round re-report may be the one carrying blocker evidence.
+"$SRH/ledger.sh" init "$WORK/led-rej2" >/dev/null
+"$SRH/ledger.sh" add "$WORK/led-rej2" --source deep "$WORK/esc1.json" >/dev/null
+r2fp="$(jq -r .fp "$WORK/led-rej2/ledger.jsonl")"
+"$SRH/ledger.sh" resolve "$WORK/led-rej2" "$r2fp" rejected >/dev/null
+"$SRH/ledger.sh" bump "$WORK/led-rej2" >/dev/null
+"$SRH/ledger.sh" add "$WORK/led-rej2" --source deep "$WORK/esc1.json" >/dev/null 2>&1
+"$SRH/ledger.sh" add "$WORK/led-rej2" --source cross "$WORK/esc2.json" >/dev/null 2>&1
+[ "$(jq -r .severity "$WORK/led-rej2/ledger.jsonl")" = "blocker" ] \
+  || fail "same-round second re-report did not adopt the higher severity"
+pass "rejected-escalation adoption works on any re-report, not once per round"
+
 fp2="$("$SRH/ledger.sh" list "$D" --status open | jq -r .fp)"
 "$SRH/ledger.sh" resolve "$D" "$fp2" contested >/dev/null
 rc=0; "$SRH/ledger.sh" converged "$D" --gate minor --max-rounds 6 >/dev/null || rc=$?
@@ -227,6 +240,9 @@ pass "bundle.sh excludes an in-worktree --out dir from the reviewed diff"
 # :(exclude,literal) keeps the sibling. This pin fails if ,literal is dropped.
 rc=0; "$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "bundle: --out at the worktree root must be refused (rc=$rc)"
+[ ! -e "$R/diff.patch" ] || fail "bundle: refused root --out still littered artifacts"
+rc=0; "$SRH/bundle.sh" -C "$R" --base main --out "$R" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "bundle: root --out must be refused in committed mode too (rc=$rc)"
 mkdir -p "$R/oX"; printf 'sibling\n' > "$R/oX/sibling.txt"
 B6="$("$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R/o*" | tail -1)"
 grep -q 'oX/sibling.txt' "$B6/files.txt" \

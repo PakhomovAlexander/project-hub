@@ -67,6 +67,18 @@ TS="$(date +%Y%m%d-%H%M%S)"
 [ -n "$OUT" ] || OUT="$(git rev-parse --absolute-git-dir)/self-review/$TS-$(echo "$BRANCH" | tr '/' '_')"
 mkdir -p "$OUT"
 
+# Refuse a worktree-root OUT before writing anything: it cannot be excluded
+# from the untracked scan, and even a refused run must not litter artifacts
+# the next bundle would review as phantom changes. pwd -P on both sides —
+# git prints the PHYSICAL toplevel; a logical pwd on a symlinked path
+# (macOS /var -> /private/var) would never prefix-match it.
+outabs="$(cd "$OUT" && pwd -P)"
+top="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
+if [ "$outabs" = "$top" ]; then
+  echo "bundle.sh: --out must not be the worktree root — the bundle's own artifacts would be reviewed as untracked changes" >&2
+  exit 2
+fi
+
 if [ "$UNCOMMITTED" -eq 1 ]; then
   git diff "$MERGE_BASE" "${SPEC[@]}" > "$OUT/diff.patch"
   git diff --name-status "$MERGE_BASE" "${SPEC[@]}" > "$OUT/files.txt"
@@ -77,14 +89,6 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
   # ls-files C-quotes non-ASCII names on its text output, which would feed
   # git-diff a quoted literal it cannot open. If OUT sits inside the
   # worktree, exclude it — the bundle must not review its own artifacts.
-  # pwd -P: git prints the PHYSICAL toplevel; a logical pwd on a symlinked
-  # path (macOS /var -> /private/var) would never prefix-match it.
-  outabs="$(cd "$OUT" && pwd -P)"
-  top="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
-  if [ "$outabs" = "$top" ]; then
-    echo "bundle.sh: --out must not be the worktree root — the bundle's own artifacts would be reviewed as untracked changes" >&2
-    exit 2
-  fi
   outrel="${outabs#"$top"/}"
   if [ "$outrel" != "$outabs" ]; then
     # literal: an OUT name containing glob chars must not widen the exclusion.

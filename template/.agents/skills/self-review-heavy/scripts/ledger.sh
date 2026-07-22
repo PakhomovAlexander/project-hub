@@ -123,12 +123,14 @@ case "$CMD" in
         prev_status="${prev%%|*}"; rest="${prev#*|}"
         prev_sev="${rest%%|*}"; prev_seen="${rest##*|}"
         in_sev="$(printf '%s' "$item" | jq -r '.severity')"
-        if { [ "$prev_status" = rejected ] || [ "$prev_status" = wontfix ]; } \
-           && [ "$prev_seen" -lt "$ROUND" ]; then
+        if [ "$prev_status" = rejected ] || [ "$prev_status" = wontfix ]; then
           # Not auto-reopened (see header) — but the orchestrator must see it,
           # and a HIGHER-severity re-report's rank and evidence are adopted in
           # place (status untouched): a manual re-triage to contested/open
           # must inherit the real rank, not the stale one it was rejected at.
+          # Deliberately NOT round-guarded: stages ingest separately within a
+          # round, and adoption is monotone — the second same-round re-report
+          # may be the one carrying the blocker-grade evidence.
           dup=$((dup + 1))
           if [ "$(sev_rank "$in_sev")" -gt "$(sev_rank "$prev_sev")" ]; then
             echo "ledger.sh: add: re-report of $prev_status finding $fp by $SOURCE at HIGHER severity ($prev_sev → $in_sev; evidence adopted) — re-triage manually if the rejection no longer holds: $title" >&2
