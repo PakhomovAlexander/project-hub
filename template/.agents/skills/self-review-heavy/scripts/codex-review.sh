@@ -39,7 +39,7 @@ while [ $# -gt 0 ]; do
     --schema) SCHEMA="$2"; shift 2 ;;
     --base) BASE="$2"; shift 2 ;;
     --uncommitted) UNCOMMITTED=1; shift ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     *) echo "codex-review.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done

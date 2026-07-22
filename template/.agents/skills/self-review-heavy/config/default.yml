@@ -16,7 +16,8 @@ goal: >
 assumptions: []
 
 scope:
-  base: auto              # diff base ref; auto = origin/master | origin/main
+  base: auto              # diff base ref; auto = origin/HEAD's target, else
+                          # origin/master | origin/main | master | main
   uncommitted: false      # include working-tree changes in the bundle
   path_filters: []        # optional globs; empty = the whole diff
 

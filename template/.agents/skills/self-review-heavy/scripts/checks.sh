@@ -12,7 +12,8 @@
 # Writes <out>/checks/<name>.log per check and (re)writes <out>/checks.tsv —
 # truncated at start, so it always reflects only the latest run:
 #   <name><TAB>pass|fail<TAB><seconds><TAB><log-file>
-# Exit: 0 if every executed check passed, 1 otherwise.
+# Exit: 0 if at least one check ran and every executed check passed;
+#       1 on any failure OR a vacuous run (zero checks executed).
 set -uo pipefail
 
 FILE=""
@@ -26,7 +27,7 @@ while [ $# -gt 0 ]; do
     --out) OUT="$2"; shift 2 ;;
     -C) DIR="$2"; shift 2 ;;
     --halt) HALT=1; shift ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     *) echo "checks.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done

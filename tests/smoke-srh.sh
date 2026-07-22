@@ -31,9 +31,9 @@ cat > "$WORK/f1.json" <<'EOF'
 EOF
 
 out="$("$SRH/ledger.sh" add "$D" --source deep "$WORK/f1.json")"
-[ "$out" = "new=2 dup=0 reopened=0 open=2" ] || fail "first add: got '$out'"
+[ "$out" = "new=2 dup=0 reopened=0 escalated=0 open=2" ] || fail "first add: got '$out'"
 out="$("$SRH/ledger.sh" add "$D" --source cross "$WORK/f1.json")"
-[ "$out" = "new=0 dup=2 reopened=0 open=2" ] || fail "duplicate add: got '$out'"
+[ "$out" = "new=0 dup=2 reopened=0 escalated=0 open=2" ] || fail "duplicate add: got '$out'"
 pass "ledger add dedups by fingerprint"
 
 cat > "$WORK/bad.json" <<'EOF'
@@ -53,7 +53,7 @@ cat > "$WORK/edge.json" <<'EOF'
 EOF
 "$SRH/ledger.sh" init "$WORK/led-edge" >/dev/null
 out="$("$SRH/ledger.sh" add "$WORK/led-edge" --source cross "$WORK/edge.json" 2>/dev/null)"
-[ "$out" = "new=2 dup=0 reopened=0 open=2" ] || fail "edge add: got '$out'"
+[ "$out" = "new=2 dup=0 reopened=0 escalated=0 open=2" ] || fail "edge add: got '$out'"
 "$SRH/ledger.sh" list "$WORK/led-edge" | jq -r .file | grep -q '(change-wide)' \
   || fail "empty file did not become the (change-wide) sentinel"
 pass "ledger add handles empty file/title per finding, not wholesale"
@@ -70,12 +70,12 @@ cat > "$WORK/fpx.json" <<'EOF'
 EOF
 "$SRH/ledger.sh" init "$WORK/led-fp" >/dev/null
 out="$("$SRH/ledger.sh" add "$WORK/led-fp" --source deep "$WORK/fpx.json")"
-[ "$out" = "new=4 dup=0 reopened=0 open=4" ] || fail "fingerprint collapsed distinct titles: '$out'"
+[ "$out" = "new=4 dup=0 reopened=0 escalated=0 open=4" ] || fail "fingerprint collapsed distinct titles: '$out'"
 cat > "$WORK/fpy.json" <<'EOF'
 {"findings":[{"severity":"minor","file":"a.c","title":"reject   X < 0","body":"b"}]}
 EOF
 out="$("$SRH/ledger.sh" add "$WORK/led-fp" --source cross "$WORK/fpy.json")"
-[ "$out" = "new=0 dup=1 reopened=0 open=4" ] || fail "case/whitespace variant did not dedup: '$out'"
+[ "$out" = "new=0 dup=1 reopened=0 escalated=0 open=4" ] || fail "case/whitespace variant did not dedup: '$out'"
 pass "fingerprints keep punctuation/non-ASCII distinct, fold case/whitespace"
 
 rc=0; "$SRH/ledger.sh" converged "$D" >/dev/null || rc=$?
@@ -92,7 +92,7 @@ pass "convergence: open major blocks, minor under the gate doesn't"
 # news: even after an immediate re-fix, the round is not clean — otherwise a
 # failed fix's second attempt ships with zero reviewer eyes on it.
 out="$("$SRH/ledger.sh" add "$D" --source deep "$WORK/f1.json" | tail -1)"
-[ "$out" = "new=0 dup=1 reopened=1 open=2" ] || fail "re-report: got '$out'"
+[ "$out" = "new=0 dup=1 reopened=1 escalated=0 open=2" ] || fail "re-report: got '$out'"
 rc=0; "$SRH/ledger.sh" converged "$D" >/dev/null || rc=$?
 [ "$rc" -eq 1 ] || fail "reopened major must block convergence (rc=$rc)"
 "$SRH/ledger.sh" resolve "$D" "$fp" fixed --note "re-fix" >/dev/null
@@ -122,6 +122,26 @@ efp="$(jq -r .fp "$WORK/led-esc/ledger.jsonl")"
 rc=0; "$SRH/ledger.sh" converged "$WORK/led-esc" >/dev/null || rc=$?
 [ "$rc" -eq 1 ] || fail "escalated reopen must block convergence (rc=$rc)"
 pass "reopen adopts the re-report's severity and evidence"
+
+# A still-OPEN finding re-reported at higher severity is escalated in place
+# (adopt + news); a rejected/wontfix one is NEVER auto-reopened — reviewers
+# only see open claims, so they'd rediscover rejected ones forever.
+"$SRH/ledger.sh" init "$WORK/led-esc2" >/dev/null
+"$SRH/ledger.sh" add "$WORK/led-esc2" --source deep "$WORK/esc1.json" >/dev/null
+"$SRH/ledger.sh" bump "$WORK/led-esc2" >/dev/null
+out="$("$SRH/ledger.sh" add "$WORK/led-esc2" --source cross "$WORK/esc2.json" | tail -1)"
+[ "$out" = "new=0 dup=0 reopened=0 escalated=1 open=1" ] || fail "open escalation: got '$out'"
+[ "$(jq -r .severity "$WORK/led-esc2/ledger.jsonl")" = "blocker" ] || fail "escalation kept stale severity"
+"$SRH/ledger.sh" init "$WORK/led-rej" >/dev/null
+"$SRH/ledger.sh" add "$WORK/led-rej" --source deep "$WORK/esc1.json" >/dev/null
+rfp="$(jq -r .fp "$WORK/led-rej/ledger.jsonl")"
+"$SRH/ledger.sh" resolve "$WORK/led-rej" "$rfp" rejected --note "not real" >/dev/null
+"$SRH/ledger.sh" bump "$WORK/led-rej" >/dev/null
+out="$("$SRH/ledger.sh" add "$WORK/led-rej" --source cross "$WORK/esc2.json" 2>/dev/null | tail -1)"
+[ "$out" = "new=0 dup=1 reopened=0 escalated=0 open=0" ] || fail "rejected re-report: got '$out'"
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "re-reported rejected finding must not block (rc=$rc)"
+pass "open findings escalate in place; rejected ones never auto-reopen"
 
 fp2="$("$SRH/ledger.sh" list "$D" --status open | jq -r .fp)"
 "$SRH/ledger.sh" resolve "$D" "$fp2" contested >/dev/null

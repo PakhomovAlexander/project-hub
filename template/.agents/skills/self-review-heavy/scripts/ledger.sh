@@ -14,10 +14,16 @@
 #
 # add     appends findings not already fingerprinted (fp = hash of file+title);
 #         duplicates bump last_seen_round — except a duplicate of an entry
-#         resolved (fixed/rejected/wontfix) in an EARLIER round, which is
-#         REOPENED with the re-report's severity and evidence adopted: a
-#         re-report after a fix means the fix didn't hold, and counts as
-#         convergence news. Prints "new=N dup=M reopened=R open=K".
+#         resolved as FIXED in an EARLIER round, which is REOPENED with the
+#         re-report's severity and evidence adopted: a re-report after a fix
+#         means the fix didn't hold, and counts as convergence news. An open
+#         or contested duplicate re-reported at HIGHER severity is ESCALATED
+#         the same way (adopt + news). rejected/wontfix entries are NEVER
+#         auto-reopened — reviewers only see open claims, so they will
+#         independently rediscover rejected ones forever; a re-report there
+#         prints a re-triage warning and stays a dup (the orchestrator
+#         decides, or the run would loop to exhaustion).
+#         Prints "new=N dup=M reopened=R escalated=E open=K".
 # converged exit codes: 0 converged · 1 not yet · 3 max-rounds exhausted.
 #         Only entries at/above --gate severity count as blocking or as
 #         convergence-resetting news; sub-gate findings never force a round.
@@ -44,7 +50,10 @@ sev_rank() {
   esac
 }
 
-[ $# -ge 2 ] || { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+# Print the whole leading comment block (minus the shebang) as usage — a
+# fixed line range silently truncates as the header grows.
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
+[ $# -ge 2 ] || { usage; exit 2; }
 CMD="$1"; DIR="$2"; shift 2
 LEDGER="$DIR/ledger.jsonl"
 ROUND_FILE="$DIR/round"
@@ -93,22 +102,34 @@ case "$CMD" in
         and (.body | type == "string"))' "$FINDINGS" >/dev/null \
       || die "add: $FINDINGS violates the findings schema (severity must be blocker|major|minor; file/title/body required)"
     ROUND="$(cat "$ROUND_FILE")"
-    new=0; dup=0; reopened=0
+    new=0; dup=0; reopened=0; escalated=0
     while IFS= read -r item; do
       file="$(printf '%s' "$item" | jq -r '.file')"
       title="$(printf '%s' "$item" | jq -r '.title')"
-      if [ -z "$title" ]; then
-        echo "ledger.sh: add: skipping finding with empty title (source=$SOURCE, file='$file')" >&2
-        continue
-      fi
+      case "$title" in
+        *[![:space:]]*) ;;   # has at least one non-space char
+        *)
+          echo "ledger.sh: add: skipping finding with empty title (source=$SOURCE, file='$file')" >&2
+          continue
+          ;;
+      esac
       [ -n "$file" ] || file="(change-wide)"
       fp="$(fingerprint "$file" "$title")"
       if grep -q "\"fp\":\"$fp\"" "$LEDGER"; then
         prev="$(jq -r --arg fp "$fp" \
-          'select(.fp == $fp) | .status + "|" + (.last_seen_round | tostring)' "$LEDGER")"
-        prev_status="${prev%%|*}"; prev_seen="${prev##*|}"
-        if { [ "$prev_status" = fixed ] || [ "$prev_status" = rejected ] || [ "$prev_status" = wontfix ]; } \
+          'select(.fp == $fp) | .status + "|" + .severity + "|" + (.last_seen_round | tostring)' "$LEDGER")"
+        prev_status="${prev%%|*}"; rest="${prev#*|}"
+        prev_sev="${rest%%|*}"; prev_seen="${rest##*|}"
+        in_sev="$(printf '%s' "$item" | jq -r '.severity')"
+        if { [ "$prev_status" = rejected ] || [ "$prev_status" = wontfix ]; } \
            && [ "$prev_seen" -lt "$ROUND" ]; then
+          # Not auto-reopened (see header) — but the orchestrator must see it.
+          dup=$((dup + 1))
+          echo "ledger.sh: add: re-report of $prev_status finding $fp by $SOURCE — re-triage manually if the rejection no longer holds: $title" >&2
+          jq -c --arg fp "$fp" --argjson r "$ROUND" \
+            'if .fp == $fp then .last_seen_round = $r else . end' "$LEDGER" > "$LEDGER.tmp"
+          mv "$LEDGER.tmp" "$LEDGER"
+        elif [ "$prev_status" = fixed ] && [ "$prev_seen" -lt "$ROUND" ]; then
           reopened=$((reopened + 1))
           # .round = $r: a reopen is NEWS — converged must see a clean round
           # after the re-fix, exactly as it would for a brand-new finding.
@@ -124,6 +145,21 @@ case "$CMD" in
              else . end' "$LEDGER" > "$LEDGER.tmp"
           mv "$LEDGER.tmp" "$LEDGER"
           echo "reopened $fp ($prev_status → open): $title"
+        elif { [ "$prev_status" = open ] || [ "$prev_status" = contested ]; } \
+             && [ "$(sev_rank "$in_sev")" -gt "$(sev_rank "$prev_sev")" ]; then
+          # Same adopt-current-truth rule as reopen: an open (or contested)
+          # finding re-reported at higher severity must not keep its stale
+          # rank — and the escalation is convergence news.
+          escalated=$((escalated + 1))
+          jq -c --arg fp "$fp" --arg src "$SOURCE" --argjson r "$ROUND" --argjson item "$item" \
+            'if .fp == $fp then .round = $r | .last_seen_round = $r
+               | .severity = $item.severity | .line = ($item.line // .line)
+               | .body = $item.body | .confidence = ($item.confidence // null)
+               | .source = $src
+               | .note = "escalated: re-reported as " + $item.severity + " by " + $src + " in round " + ($r | tostring)
+             else . end' "$LEDGER" > "$LEDGER.tmp"
+          mv "$LEDGER.tmp" "$LEDGER"
+          echo "escalated $fp ($prev_sev → $in_sev): $title"
         else
           dup=$((dup + 1))
           jq -c --arg fp "$fp" --argjson r "$ROUND" \
@@ -139,7 +175,7 @@ case "$CMD" in
       fi
     done < <(jq -c '.findings[]' "$FINDINGS")
     open="$(jq -sc 'map(select(.status == "open")) | length' "$LEDGER")"
-    echo "new=$new dup=$dup reopened=$reopened open=$open"
+    echo "new=$new dup=$dup reopened=$reopened escalated=$escalated open=$open"
     ;;
 
   list)

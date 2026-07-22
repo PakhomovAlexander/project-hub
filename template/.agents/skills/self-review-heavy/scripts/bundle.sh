@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
     --out) OUT="$2"; shift 2 ;;
     --uncommitted) UNCOMMITTED=1; shift ;;
     --paths) PATHS="$2"; shift 2 ;;
-    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     *) echo "bundle.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -75,8 +75,16 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
   # git diff can't see untracked files — append their full contents as adds,
   # or reviewers converge without ever seeing a brand-new file. NUL-delimited:
   # ls-files C-quotes non-ASCII names on its text output, which would feed
-  # git-diff a quoted literal it cannot open.
-  git ls-files --others --exclude-standard -z "${SPEC[@]}" > "$OUT/.untracked0"
+  # git-diff a quoted literal it cannot open. If OUT sits inside the
+  # worktree, exclude it — the bundle must not review its own artifacts.
+  outabs="$(cd "$OUT" && pwd)"
+  top="$(git rev-parse --show-toplevel)"
+  outrel="${outabs#"$top"/}"
+  if [ "$outrel" != "$outabs" ]; then
+    git ls-files --others --exclude-standard -z "${SPEC[@]}" ":(exclude)$outrel" > "$OUT/.untracked0"
+  else
+    git ls-files --others --exclude-standard -z "${SPEC[@]}" > "$OUT/.untracked0"
+  fi
   tr '\0' '\n' < "$OUT/.untracked0" > "$OUT/untracked.txt"
   while IFS= read -r -d '' uf; do
     printf 'A\t%s\n' "$uf" >> "$OUT/files.txt"

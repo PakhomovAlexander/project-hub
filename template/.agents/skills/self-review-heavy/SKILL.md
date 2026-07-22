@@ -121,9 +121,13 @@ skipped second opinion is reported, never silently absorbed.
 **Ingest.** After each stage:
 `scripts/ledger.sh add <bundle>/ledger --source <stage> <findings-file>` —
 it fingerprints (file+title), dedupes across rounds, and prints
-`new= dup= reopened= open=`. A `reopened` line means a finding you resolved
-in an earlier round was re-reported — the fix didn't hold; treat it as a
-failed fix in triage, never as a duplicate. When ingesting the cross stage,
+`new= dup= reopened= escalated= open=`. A `reopened` line means a finding
+you resolved as fixed in an earlier round was re-reported — the fix didn't
+hold; treat it as a failed fix in triage, never as a duplicate. An
+`escalated` line means an open claim came back at higher severity — re-triage
+at the new rank. A "re-report of rejected/wontfix" warning is a prompt to
+re-check that resolution by hand; the ledger deliberately never reopens
+those on its own. When ingesting the cross stage,
 also check its `disputes` cover every claim you passed in: an unaddressed
 claim is *unverified*, not confirmed — re-ask or say so in the report.
 
