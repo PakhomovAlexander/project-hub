@@ -143,7 +143,14 @@ out="$("$SRH/ledger.sh" add "$WORK/led-rej" --source cross "$WORK/esc2.json" 2>/
 [ "$out" = "new=0 dup=1 reopened=0 escalated=0 open=0" ] || fail "rejected re-report: got '$out'"
 rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
 [ "$rc" -eq 0 ] || fail "re-reported rejected finding must not block (rc=$rc)"
-pass "open findings escalate in place; rejected ones never auto-reopen"
+# ...but the higher-severity evidence is adopted in place, so a manual
+# re-triage to contested inherits the REAL rank and blocks at the gate.
+[ "$(jq -r .severity "$WORK/led-rej/ledger.jsonl")" = "blocker" ] \
+  || fail "rejected re-report did not adopt the higher severity"
+"$SRH/ledger.sh" resolve "$WORK/led-rej" "$rfp" contested >/dev/null
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
+[ "$rc" -eq 1 ] || fail "manually contested escalated re-report must block (rc=$rc)"
+pass "open findings escalate in place; rejected ones never auto-reopen but adopt evidence"
 
 fp2="$("$SRH/ledger.sh" list "$D" --status open | jq -r .fp)"
 "$SRH/ledger.sh" resolve "$D" "$fp2" contested >/dev/null
@@ -213,6 +220,17 @@ B5="$("$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R/innerbundle" 
 grep -q 'innerbundle' "$B5/files.txt" && fail "bundle: reviewed its own artifacts under --out inside the worktree"
 grep -q 'src/NewThing.cpp' "$B5/files.txt" || fail "bundle: OUT exclusion dropped a real untracked file"
 pass "bundle.sh excludes an in-worktree --out dir from the reviewed diff"
+
+# --out at the worktree root cannot be excluded via pathspec — refuse it;
+# and a glob-named OUT must not over-exclude sibling untracked files
+# (the exclusion pathspec is literal).
+rc=0; "$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "bundle: --out at the worktree root must be refused (rc=$rc)"
+mkdir -p "$R/outer"; printf 'sibling\n' > "$R/outer/sibling.txt"
+B6="$("$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R/out" | tail -1)"
+grep -q 'outer/sibling.txt' "$B6/files.txt" \
+  || fail "bundle: literal exclusion over-matched a sibling dir (out vs outer)"
+pass "bundle.sh refuses a worktree-root --out and keeps the exclusion literal"
 
 # Auto base detection must survive a dangling origin/HEAD (post-migration
 # fetch --prune state) by falling back to a verified candidate.

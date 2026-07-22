@@ -81,9 +81,14 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
   # path (macOS /var -> /private/var) would never prefix-match it.
   outabs="$(cd "$OUT" && pwd -P)"
   top="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
+  if [ "$outabs" = "$top" ]; then
+    echo "bundle.sh: --out must not be the worktree root — the bundle's own artifacts would be reviewed as untracked changes" >&2
+    exit 2
+  fi
   outrel="${outabs#"$top"/}"
   if [ "$outrel" != "$outabs" ]; then
-    git ls-files --others --exclude-standard -z "${SPEC[@]}" ":(exclude)$outrel" > "$OUT/.untracked0"
+    # literal: an OUT name containing glob chars must not widen the exclusion.
+    git ls-files --others --exclude-standard -z "${SPEC[@]}" ":(exclude,literal)$outrel" > "$OUT/.untracked0"
   else
     git ls-files --others --exclude-standard -z "${SPEC[@]}" > "$OUT/.untracked0"
   fi

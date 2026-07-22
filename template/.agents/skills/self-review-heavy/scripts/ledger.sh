@@ -22,7 +22,9 @@
 #         auto-reopened — reviewers only see open claims, so they will
 #         independently rediscover rejected ones forever; a re-report there
 #         prints a re-triage warning and stays a dup (the orchestrator
-#         decides, or the run would loop to exhaustion).
+#         decides, or the run would loop to exhaustion) — but a
+#         higher-severity re-report adopts the new rank and evidence in
+#         place, so a manual re-triage inherits the real severity.
 #         Prints "new=N dup=M reopened=R escalated=E open=K".
 # converged exit codes: 0 converged · 1 not yet · 3 max-rounds exhausted.
 #         Only entries at/above --gate severity count as blocking or as
@@ -123,11 +125,24 @@ case "$CMD" in
         in_sev="$(printf '%s' "$item" | jq -r '.severity')"
         if { [ "$prev_status" = rejected ] || [ "$prev_status" = wontfix ]; } \
            && [ "$prev_seen" -lt "$ROUND" ]; then
-          # Not auto-reopened (see header) — but the orchestrator must see it.
+          # Not auto-reopened (see header) — but the orchestrator must see it,
+          # and a HIGHER-severity re-report's rank and evidence are adopted in
+          # place (status untouched): a manual re-triage to contested/open
+          # must inherit the real rank, not the stale one it was rejected at.
           dup=$((dup + 1))
-          echo "ledger.sh: add: re-report of $prev_status finding $fp by $SOURCE — re-triage manually if the rejection no longer holds: $title" >&2
-          jq -c --arg fp "$fp" --argjson r "$ROUND" \
-            'if .fp == $fp then .last_seen_round = $r else . end' "$LEDGER" > "$LEDGER.tmp"
+          if [ "$(sev_rank "$in_sev")" -gt "$(sev_rank "$prev_sev")" ]; then
+            echo "ledger.sh: add: re-report of $prev_status finding $fp by $SOURCE at HIGHER severity ($prev_sev → $in_sev; evidence adopted) — re-triage manually if the rejection no longer holds: $title" >&2
+            jq -c --arg fp "$fp" --arg src "$SOURCE" --argjson r "$ROUND" --argjson item "$item" \
+              'if .fp == $fp then .last_seen_round = $r
+                 | .severity = $item.severity | .line = ($item.line // .line)
+                 | .body = $item.body | .confidence = ($item.confidence // null)
+                 | .source = $src
+               else . end' "$LEDGER" > "$LEDGER.tmp"
+          else
+            echo "ledger.sh: add: re-report of $prev_status finding $fp by $SOURCE — re-triage manually if the rejection no longer holds: $title" >&2
+            jq -c --arg fp "$fp" --argjson r "$ROUND" \
+              'if .fp == $fp then .last_seen_round = $r else . end' "$LEDGER" > "$LEDGER.tmp"
+          fi
           mv "$LEDGER.tmp" "$LEDGER"
         elif [ "$prev_status" = fixed ] && [ "$prev_seen" -lt "$ROUND" ]; then
           reopened=$((reopened + 1))
