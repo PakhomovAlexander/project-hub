@@ -250,6 +250,18 @@ rc=0; "$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R" >/dev/null 2
 [ ! -e "$R/diff.patch" ] || fail "bundle: refused root --out still littered artifacts"
 rc=0; "$SRH/bundle.sh" -C "$R" --base main --out "$R" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "bundle: root --out must be refused in committed mode too (rc=$rc)"
+# On a case-insensitive filesystem (macOS APFS default), a case-variant
+# --out spelling must not bypass the refusal: the guard canonicalizes to
+# on-disk case and compares inode identity. Skipped where case-sensitive.
+RV="$(dirname "$R")/$(basename "$R" | tr '[:lower:]' '[:upper:]')"
+if [ -d "$RV" ] && [ "$RV" -ef "$R" ]; then
+  rc=0; "$SRH/bundle.sh" -C "$RV" --base main --uncommitted --out "$RV" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] || fail "bundle: case-variant root --out bypassed the refusal (rc=$rc)"
+  [ ! -e "$R/diff.patch" ] || fail "bundle: case-variant refused run littered artifacts"
+  pass "bundle.sh refuses a case-variant worktree-root --out (case-insensitive fs)"
+else
+  pass "case-variant --out pin skipped (case-sensitive filesystem)"
+fi
 mkdir -p "$R/oX"; printf 'sibling\n' > "$R/oX/sibling.txt"
 B6="$("$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R/o*" | tail -1)"
 grep -q 'oX/sibling.txt' "$B6/files.txt" \

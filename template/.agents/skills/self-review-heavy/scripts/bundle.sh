@@ -69,12 +69,15 @@ mkdir -p "$OUT"
 
 # Refuse a worktree-root OUT before writing anything: it cannot be excluded
 # from the untracked scan, and even a refused run must not litter artifacts
-# the next bundle would review as phantom changes. pwd -P on both sides —
-# git prints the PHYSICAL toplevel; a logical pwd on a symlinked path
-# (macOS /var -> /private/var) would never prefix-match it.
-outabs="$(cd "$OUT" && pwd -P)"
-top="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
-if [ "$outabs" = "$top" ]; then
+# the next bundle would review as phantom changes. Canonicalize BOTH sides
+# with the external pwd -P: it resolves symlinks (macOS /var -> /private/var)
+# AND prints on-disk case — bash's builtin keeps typed case, which on a
+# case-insensitive filesystem never prefix-matches git's canonical toplevel.
+# The refusal itself is inode-identity (-ef), immune to any residual alias.
+phys_pwd() { cd "$1" && { /bin/pwd -P 2>/dev/null || pwd -P; }; }
+outabs="$(phys_pwd "$OUT")"
+top="$(phys_pwd "$(git rev-parse --show-toplevel)")"
+if [ "$outabs" = "$top" ] || [ "$outabs" -ef "$top" ]; then
   echo "bundle.sh: --out must not be the worktree root — the bundle's own artifacts would be reviewed as untracked changes" >&2
   exit 2
 fi
