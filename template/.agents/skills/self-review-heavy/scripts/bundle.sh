@@ -47,8 +47,12 @@ git rev-parse --git-dir >/dev/null 2>&1 || { echo "bundle.sh: not a git repo: $R
 
 if [ -z "$BASE" ]; then
   # Prefer the remote's actual default branch — a migrated repo may keep a
-  # stale origin/master alongside the real origin/main.
+  # stale origin/master alongside the real origin/main. The symref can
+  # dangle (e.g. after fetch --prune); verify it resolves or fall through.
   BASE="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "$BASE" ] && ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
+    BASE=""
+  fi
 fi
 if [ -z "$BASE" ]; then
   for cand in origin/master origin/main master main; do
@@ -68,14 +72,18 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
   git diff --name-status "$MERGE_BASE" "${SPEC[@]}" > "$OUT/files.txt"
   git diff --stat "$MERGE_BASE" "${SPEC[@]}" > "$OUT/stats.txt"
   git diff --numstat "$MERGE_BASE" "${SPEC[@]}" > "$OUT/.numstat"
-  git ls-files --others --exclude-standard "${SPEC[@]}" > "$OUT/untracked.txt"
   # git diff can't see untracked files — append their full contents as adds,
-  # or reviewers converge without ever seeing a brand-new file.
-  while IFS= read -r uf; do
+  # or reviewers converge without ever seeing a brand-new file. NUL-delimited:
+  # ls-files C-quotes non-ASCII names on its text output, which would feed
+  # git-diff a quoted literal it cannot open.
+  git ls-files --others --exclude-standard -z "${SPEC[@]}" > "$OUT/.untracked0"
+  tr '\0' '\n' < "$OUT/.untracked0" > "$OUT/untracked.txt"
+  while IFS= read -r -d '' uf; do
     printf 'A\t%s\n' "$uf" >> "$OUT/files.txt"
     git diff --no-index -- /dev/null "$uf" >> "$OUT/diff.patch" || true
     git diff --no-index --numstat -- /dev/null "$uf" >> "$OUT/.numstat" || true
-  done < "$OUT/untracked.txt"
+  done < "$OUT/.untracked0"
+  rm -f "$OUT/.untracked0"
 else
   git diff "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/diff.patch"
   git diff --name-status "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/files.txt"

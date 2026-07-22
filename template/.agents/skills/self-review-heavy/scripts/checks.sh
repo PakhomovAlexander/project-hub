@@ -33,6 +33,10 @@ done
 if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then echo "checks.sh: --file is required and must exist" >&2; exit 2; fi
 [ -n "$OUT" ] || { echo "checks.sh: --out is required" >&2; exit 2; }
 mkdir -p "$OUT/checks"
+if [ "$FILE" -ef "$OUT/checks.tsv" ]; then
+  echo "checks.sh: --file must not be <out>/checks.tsv — the results file would truncate the input; name the list differently (e.g. checks.render.tsv)" >&2
+  exit 2
+fi
 : > "$OUT/checks.tsv"
 
 TAB="$(printf '\t')"
@@ -70,4 +74,8 @@ while IFS="$TAB" read -r name cmd || [ -n "$name" ]; do
 done < "$FILE"
 
 echo "checks: $passed/$total passed"
+if [ "$total" -eq 0 ]; then
+  echo "checks.sh: no checks executed — empty or comment-only TSV; a vacuous run is not a pass" >&2
+  exit 1
+fi
 exit "$rc"

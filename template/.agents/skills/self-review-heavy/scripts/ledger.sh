@@ -15,8 +15,9 @@
 # add     appends findings not already fingerprinted (fp = hash of file+title);
 #         duplicates bump last_seen_round — except a duplicate of an entry
 #         resolved (fixed/rejected/wontfix) in an EARLIER round, which is
-#         REOPENED: a re-report after a fix means the fix didn't hold.
-#         Prints "new=N dup=M reopened=R open=K" (reopened fps listed above).
+#         REOPENED with the re-report's severity and evidence adopted: a
+#         re-report after a fix means the fix didn't hold, and counts as
+#         convergence news. Prints "new=N dup=M reopened=R open=K".
 # converged exit codes: 0 converged · 1 not yet · 3 max-rounds exhausted.
 #         Only entries at/above --gate severity count as blocking or as
 #         convergence-resetting news; sub-gate findings never force a round.
@@ -25,12 +26,13 @@ set -euo pipefail
 die() { echo "ledger.sh: $*" >&2; exit 2; }
 need_jq() { command -v jq >/dev/null || die "jq is required"; }
 
-# fp = exact file path + normalized title (case/punctuation-insensitive so
-# reworded re-reports still match). The path is NOT normalized: src/foo-bar
-# and src/foo_bar are different files and must not share a fingerprint.
+# fp = exact file path + title normalized ONLY for case and whitespace.
+# The path is untouched (src/foo-bar and src/foo_bar are different files);
+# punctuation and non-ASCII stay significant ("x < 0" vs "x > 0", Cyrillic
+# titles) — stripping them collapsed distinct findings into one entry.
 fingerprint() {
   { printf '%s|' "$1"; printf '%s' "$2" | tr '[:upper:]' '[:lower:]' \
-      | tr -cs 'a-z0-9' ' ' | sed 's/^ //; s/ $//'; } \
+      | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'; } \
     | shasum -a 256 | cut -c1-12
 }
 
@@ -81,11 +83,13 @@ case "$CMD" in
     [ -f "$LEDGER" ] || die "not initialized: $DIR"
     jq -e '.findings | type == "array"' "$FINDINGS" >/dev/null || die "add: $FINDINGS has no .findings array"
     # Reject malformed findings up front: an out-of-enum severity would rank
-    # as minor in `converged` and silently slip under the gate.
+    # as minor in `converged` and silently slip under the gate. Empty
+    # file/title strings are handled per finding below, not rejected here —
+    # dying wholesale would throw away a whole valid batch over one entry.
     jq -e 'all(.findings[];
         (.severity | . == "blocker" or . == "major" or . == "minor")
-        and (.file | type == "string" and length > 0)
-        and (.title | type == "string" and length > 0)
+        and (.file | type == "string")
+        and (.title | type == "string")
         and (.body | type == "string"))' "$FINDINGS" >/dev/null \
       || die "add: $FINDINGS violates the findings schema (severity must be blocker|major|minor; file/title/body required)"
     ROUND="$(cat "$ROUND_FILE")"
@@ -93,6 +97,11 @@ case "$CMD" in
     while IFS= read -r item; do
       file="$(printf '%s' "$item" | jq -r '.file')"
       title="$(printf '%s' "$item" | jq -r '.title')"
+      if [ -z "$title" ]; then
+        echo "ledger.sh: add: skipping finding with empty title (source=$SOURCE, file='$file')" >&2
+        continue
+      fi
+      [ -n "$file" ] || file="(change-wide)"
       fp="$(fingerprint "$file" "$title")"
       if grep -q "\"fp\":\"$fp\"" "$LEDGER"; then
         prev="$(jq -r --arg fp "$fp" \
@@ -101,8 +110,16 @@ case "$CMD" in
         if { [ "$prev_status" = fixed ] || [ "$prev_status" = rejected ] || [ "$prev_status" = wontfix ]; } \
            && [ "$prev_seen" -lt "$ROUND" ]; then
           reopened=$((reopened + 1))
-          jq -c --arg fp "$fp" --arg src "$SOURCE" --argjson r "$ROUND" \
-            'if .fp == $fp then .status = "open" | .last_seen_round = $r
+          # .round = $r: a reopen is NEWS — converged must see a clean round
+          # after the re-fix, exactly as it would for a brand-new finding.
+          # The re-report is the CURRENT truth: adopt its severity, evidence
+          # and source, or a round-1 minor re-reported as a blocker would
+          # keep slipping under the gate on its stale severity.
+          jq -c --arg fp "$fp" --arg src "$SOURCE" --argjson r "$ROUND" --argjson item "$item" \
+            'if .fp == $fp then .status = "open" | .round = $r | .last_seen_round = $r
+               | .severity = $item.severity | .line = ($item.line // .line)
+               | .body = $item.body | .confidence = ($item.confidence // null)
+               | .source = $src
                | .note = "reopened: re-reported by " + $src + " in round " + ($r | tostring)
              else . end' "$LEDGER" > "$LEDGER.tmp"
           mv "$LEDGER.tmp" "$LEDGER"
@@ -115,9 +132,9 @@ case "$CMD" in
         fi
       else
         new=$((new + 1))
-        printf '%s' "$item" | jq -c --arg fp "$fp" --arg src "$SOURCE" --argjson r "$ROUND" \
+        printf '%s' "$item" | jq -c --arg fp "$fp" --arg src "$SOURCE" --arg f "$file" --argjson r "$ROUND" \
           '{fp: $fp, round: $r, last_seen_round: $r, source: $src, status: "open",
-            severity, file, line: (.line // null), title, body,
+            severity, file: $f, line: (.line // null), title, body,
             confidence: (.confidence // null)}' >> "$LEDGER"
       fi
     done < <(jq -c '.findings[]' "$FINDINGS")

@@ -58,7 +58,8 @@ stages:
 
 iterations:
   max_rounds: 3           # hard cap on full review loops
-  clean_rounds: 1         # stop after this many consecutive rounds with no new findings
+  clean_rounds: 1         # stop after this many consecutive rounds with no new
+                          # findings at or above the severity gate
   gate_each_round: true   # re-run the stage-1 gate after applying fixes
 
 severity_gate: major      # open findings at/above this severity block convergence

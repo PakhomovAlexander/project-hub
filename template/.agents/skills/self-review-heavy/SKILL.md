@@ -72,8 +72,11 @@ bundle → [gate] → [deep] → [cross] → triage + fix → converged?
 rounds refresh it **in place** with `--out <bundle>` (same dir keeps the
 ledger and artifact paths stable; the diff stays cumulative vs the merge
 base). Note `head=` from `meta.env` each round and hand round-2+ reviewers
-the delta as the commit range `<previous head>..HEAD`. Init the ledger next
-to it once: `scripts/ledger.sh init <bundle>/ledger`.
+the delta as the commit range `<previous head>..HEAD`. For `--uncommitted`
+runs HEAD may not move between rounds: copy `diff.patch` to
+`diff.prev.patch` before re-bundling — the round delta is then the
+difference between the two patches. Init the ledger next to it once:
+`scripts/ledger.sh init <bundle>/ledger`.
 
 **Diff-size rule:** if `changed_lines` in `meta.env` exceeds ~500, split
 the deep stage by subsystem/commit into parallel scoped reviewers (same
