@@ -222,14 +222,15 @@ grep -q 'src/NewThing.cpp' "$B5/files.txt" || fail "bundle: OUT exclusion droppe
 pass "bundle.sh excludes an in-worktree --out dir from the reviewed diff"
 
 # --out at the worktree root cannot be excluded via pathspec — refuse it;
-# and a glob-named OUT must not over-exclude sibling untracked files
-# (the exclusion pathspec is literal).
+# and a glob-named OUT must not over-exclude sibling untracked files: with a
+# plain :(exclude) the pathspec 'o*' would swallow oX/ too — only
+# :(exclude,literal) keeps the sibling. This pin fails if ,literal is dropped.
 rc=0; "$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "bundle: --out at the worktree root must be refused (rc=$rc)"
-mkdir -p "$R/outer"; printf 'sibling\n' > "$R/outer/sibling.txt"
-B6="$("$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R/out" | tail -1)"
-grep -q 'outer/sibling.txt' "$B6/files.txt" \
-  || fail "bundle: literal exclusion over-matched a sibling dir (out vs outer)"
+mkdir -p "$R/oX"; printf 'sibling\n' > "$R/oX/sibling.txt"
+B6="$("$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R/o*" | tail -1)"
+grep -q 'oX/sibling.txt' "$B6/files.txt" \
+  || fail "bundle: exclusion over-matched a glob sibling (o* vs oX) — ,literal regressed"
 pass "bundle.sh refuses a worktree-root --out and keeps the exclusion literal"
 
 # Auto base detection must survive a dangling origin/HEAD (post-migration
