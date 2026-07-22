@@ -77,8 +77,10 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
   # ls-files C-quotes non-ASCII names on its text output, which would feed
   # git-diff a quoted literal it cannot open. If OUT sits inside the
   # worktree, exclude it — the bundle must not review its own artifacts.
-  outabs="$(cd "$OUT" && pwd)"
-  top="$(git rev-parse --show-toplevel)"
+  # pwd -P: git prints the PHYSICAL toplevel; a logical pwd on a symlinked
+  # path (macOS /var -> /private/var) would never prefix-match it.
+  outabs="$(cd "$OUT" && pwd -P)"
+  top="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
   outrel="${outabs#"$top"/}"
   if [ "$outrel" != "$outabs" ]; then
     git ls-files --others --exclude-standard -z "${SPEC[@]}" ":(exclude)$outrel" > "$OUT/.untracked0"
