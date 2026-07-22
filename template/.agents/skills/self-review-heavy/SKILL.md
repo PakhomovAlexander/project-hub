@@ -67,20 +67,26 @@ never review a state the author didn't intend.
 bundle → [gate] → [deep] → [cross] → triage + fix → converged?
 ```
 
-**Bundle.** `scripts/bundle.sh -C <repo> [--base REF] [--uncommitted]` —
-last stdout line is the bundle dir. Round 1 only; later rounds reuse it
-(re-bundle only if commits were added). Init the ledger next to it once:
-`scripts/ledger.sh init <bundle>/ledger`.
+**Bundle.** `scripts/bundle.sh -C <repo> [--base REF] [--uncommitted]
+[--paths G,G]` — last stdout line is the bundle dir. Round 1 only; later
+rounds refresh it **in place** with `--out <bundle>` (same dir keeps the
+ledger and artifact paths stable; the diff stays cumulative vs the merge
+base). Note `head=` from `meta.env` each round and hand round-2+ reviewers
+the delta as the commit range `<previous head>..HEAD`. Init the ledger next
+to it once: `scripts/ledger.sh init <bundle>/ledger`.
 
-**Diff-size rule:** if `meta.env` shows more than ~500 changed lines, split
+**Diff-size rule:** if `changed_lines` in `meta.env` exceeds ~500, split
 the deep stage by subsystem/commit into parallel scoped reviewers (same
-rubric, each given a path scope) and add one whole-change closeout pass at
-the end. Review quality falls off a cliff on oversized diffs.
+rubric, each given a path scope and its **own** output file —
+`<bundle>/findings-deep-<scope>.json`, ingested one by one; a shared file
+would race) and add one whole-change closeout pass at the end. Review
+quality falls off a cliff on oversized diffs.
 
 **Stage 1 — gate** (`references/stage-1-gate.md`). Spawn the gate runner
-with: the playbook path, bundle dir, repo path, the profile's checks with
-`{placeholders}` you've rendered, and an output path
-`<bundle>/findings-gate.json`. In Claude Code the runner is the `srh-gate`
+with: the playbook path, bundle dir, repo path, the profile's rule-doc
+paths (rules can define repo-specific blockers — secret formats, size
+limits — the gate must apply), the profile's checks with `{placeholders}`
+you've rendered, and an output path `<bundle>/findings-gate.json`. In Claude Code the runner is the `srh-gate`
 agent (opus, effort high); elsewhere, any runner of that tier. Save its JSON
 output yourself if the harness returns it as text. If the gate finds
 blockers: fix, re-run the gate. Stages 2–3 start only on a clean gate — deep
@@ -88,11 +94,14 @@ reviewers must not burn budget on a change that doesn't build or pass its
 own tests.
 
 **Stage 2 — deep** (`references/stage-2-deep.md`). Runner: `srh-deep-reviewer`
-agent (fable, effort max) or equivalent. Give it: rubric path, rule-doc
-paths from the profile, bundle dir, gate evidence (checks.tsv summary),
-benchmark results so far, the open-ledger claims list
-(`scripts/ledger.sh list <dir> --status open`, titles only), and the output
-path `<bundle>/findings-deep.json`. Reviewer is read-only.
+agent (fable, effort max) or equivalent. Give it: rubric path, the
+profile's goal, assumptions, rule-doc paths and `emphasis` lines (a
+reviewer that never sees the assumptions will re-litigate them), bundle
+dir, gate evidence (checks.tsv summary), benchmark results so far, the
+open-ledger claims as bare claim lines — `fp severity file:line title` from
+`scripts/ledger.sh list <dir> --status open`, never the body/reasoning
+(the fp is what `disputes` entries key on) — and the output path
+`<bundle>/findings-deep.json`. Reviewer is read-only.
 
 **Stage 3 — cross.** Render `references/stage-3-cross.md` into
 `<bundle>/prompt-cross.md` (same inputs as stage 2 — claims, not reasoning),
@@ -109,7 +118,11 @@ skipped second opinion is reported, never silently absorbed.
 **Ingest.** After each stage:
 `scripts/ledger.sh add <bundle>/ledger --source <stage> <findings-file>` —
 it fingerprints (file+title), dedupes across rounds, and prints
-`new= dup= open=`.
+`new= dup= reopened= open=`. A `reopened` line means a finding you resolved
+in an earlier round was re-reported — the fix didn't hold; treat it as a
+failed fix in triage, never as a duplicate. When ingesting the cross stage,
+also check its `disputes` cover every claim you passed in: an unaddressed
+claim is *unverified*, not confirmed — re-ask or say so in the report.
 
 ## 3 · Triage and fix (you, not the reviewers)
 
@@ -131,16 +144,19 @@ For every open finding, in severity order:
 them per the profile's `benchmarks.runner`/`recipe`, holding results to
 [`references/benchmark-validity.md`](references/benchmark-validity.md). Feed
 results into the next round's evidence. Reproduce-or-drop: a perf finding
-that survives a full round with no measurement attached is downgraded to
-minor (`resolve … --note "no measurement produced"` + re-add as minor if
-still worth recording). An unstable benchmark is a benchmark bug — fix it,
-don't interpret it.
+that survives a full round with no measurement attached is downgraded:
+`resolve <fp> wontfix --note "unmeasured perf claim — downgraded to minor"`.
+The resolved entry with its note IS the record — don't re-add it (same
+file+title would be fingerprint-deduped anyway). An unstable benchmark is a
+benchmark bug — fix it, don't interpret it.
 
 After fixes: re-run the gate if the profile says `gate_each_round: true`
 (default — fixes can break builds too), bump the round
 (`ledger.sh bump <dir>`), and re-run the review stages **on the delta**
 (new commits since last round + one hop of dependencies), passing the
-updated ledger. New minors in round 2+ never justify another round.
+updated ledger. New findings below the severity gate never justify another
+round on their own — `ledger.sh converged` counts only gate-level news as
+convergence-resetting, so record them and move on.
 
 ## 4 · Convergence
 
@@ -150,7 +166,7 @@ updated ledger. New minors in round 2+ never justify another round.
 ```
 
 - exit 0 `CONVERGED` — no open/contested findings at or above the gate and
-  no new findings for K rounds → done.
+  no new gate-level findings for K rounds → done.
 - exit 1 `NOT CONVERGED` — next round.
 - exit 3 `MAX-ROUNDS EXHAUSTED` — stop and report the residue honestly.
   Never keep looping past the cap, and never call an exhausted run clean.

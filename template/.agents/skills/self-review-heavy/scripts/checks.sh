@@ -9,7 +9,8 @@
 #   -C            directory to run the commands in (default: .)
 #   --halt        stop at the first failing check
 #
-# Writes <out>/checks/<name>.log per check and appends to <out>/checks.tsv:
+# Writes <out>/checks/<name>.log per check and (re)writes <out>/checks.tsv —
+# truncated at start, so it always reflects only the latest run:
 #   <name><TAB>pass|fail<TAB><seconds><TAB><log-file>
 # Exit: 0 if every executed check passed, 1 otherwise.
 set -uo pipefail
@@ -32,13 +33,16 @@ done
 if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then echo "checks.sh: --file is required and must exist" >&2; exit 2; fi
 [ -n "$OUT" ] || { echo "checks.sh: --out is required" >&2; exit 2; }
 mkdir -p "$OUT/checks"
+: > "$OUT/checks.tsv"
 
 TAB="$(printf '\t')"
 total=0
 passed=0
 rc=0
 
-while IFS="$TAB" read -r name cmd; do
+# `|| [ -n "$name" ]` keeps the final line alive when the TSV lacks a
+# trailing newline — read returns nonzero there despite filling the fields.
+while IFS="$TAB" read -r name cmd || [ -n "$name" ]; do
   [ -n "$name" ] || continue
   case "$name" in '#'*) continue ;; esac
   if [ -z "${cmd:-}" ]; then

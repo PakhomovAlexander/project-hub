@@ -18,6 +18,8 @@ rules:
   - <path to this repo's own review rulebook, if it has one>
   - <path to its coding-rules file (AGENTS.md / CLAUDE.md / CONTRIBUTING)>
 
+# Check cmds run with cwd = the target repo (the gate passes -C <repo> to
+# checks.sh); this ssh example carries its own cd because it runs remotely.
 checks:
   - name: build
     cmd: ssh <build-host> 'cd <checkout> && <build command> 2>&1 | tail -30'

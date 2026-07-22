@@ -24,6 +24,10 @@ RULES (binding)
 read first, e.g. ".claude/skills/review/SKILL.md in this repo — apply its
 severity model and precision discipline"}
 
+EMPHASIS (review priorities for this repo)
+{profile emphasis lines, one per line — drop the section if the profile has
+none}
+
 CHANGE
 - Repo: {absolute repo path} — you are running read-only inside it.
 - Diff: {bundle}/diff.patch · commits: {bundle}/commits.txt · stat: {bundle}/stats.txt

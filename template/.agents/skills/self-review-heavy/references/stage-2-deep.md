@@ -50,8 +50,8 @@ blocker.
 - In round 2+, review the delta since the last round plus one hop of
   dependencies. A brand-new finding on code that already existed last round
   must say why it was not visible before.
-- New minor findings in round 2+ are recorded but must not drive another
-  round.
+- New findings below the run's severity gate in round 2+ are recorded but
+  never drive another round.
 
 ## Output
 

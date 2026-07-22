@@ -10,8 +10,9 @@
 #          match --schema (default: findings.schema.json next to this script)
 #          and is written to --out as JSON. Full session log: <out>.log
 #   review           codex review (native reviewer) against --base or
-#          --uncommitted, with --prompt-file as custom instructions; prose
-#          output captured to --out.
+#          --uncommitted, with --prompt-file as custom instructions; PROSE
+#          output captured to --out — not ledger-ingestible. A manual
+#          fallback for humans, never a pipeline stage.
 #
 # Exit code: codex's own exit code.
 set -euo pipefail
@@ -44,6 +45,7 @@ while [ $# -gt 0 ]; do
 done
 if [ -z "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then echo "codex-review.sh: --prompt-file is required and must exist" >&2; exit 2; fi
 [ -n "$OUT" ] || { echo "codex-review.sh: --out is required" >&2; exit 2; }
+case "$MODE" in exec|review) ;; *) echo "codex-review.sh: unknown --mode $MODE (exec|review)" >&2; exit 2 ;; esac
 command -v codex >/dev/null || { echo "codex-review.sh: codex CLI not found" >&2; exit 127; }
 
 if [ "$MODE" = "exec" ]; then

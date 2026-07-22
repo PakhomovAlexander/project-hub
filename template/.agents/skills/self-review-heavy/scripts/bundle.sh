@@ -3,11 +3,14 @@
 # commit messages, diffstat, candidate tests. Read-only on the repo, no network.
 #
 # Usage:
-#   bundle.sh [-C <repo-dir>] [--base <ref>] [--uncommitted] [--out <dir>]
+#   bundle.sh [-C <repo-dir>] [--base <ref>] [--uncommitted] [--paths <g,g>] [--out <dir>]
 #
-#   --base         diff base ref (default: auto — first of origin/master,
-#                  origin/main, master, main that exists)
-#   --uncommitted  include working-tree changes (and list untracked files)
+#   --base         diff base ref (default: auto — the remote's default branch
+#                  via origin/HEAD, else first of origin/master, origin/main,
+#                  master, main that exists)
+#   --uncommitted  include working-tree changes; untracked files are listed in
+#                  untracked.txt AND appended to diff.patch/files.txt as adds
+#   --paths        comma-separated pathspecs limiting the reviewed diff
 #   --out          bundle directory (default: <repo>/.git/self-review/<ts>-<branch>)
 #
 # Prints a short summary; the LAST line of stdout is the bundle directory.
@@ -17,6 +20,7 @@ REPO="."
 BASE=""
 OUT=""
 UNCOMMITTED=0
+PATHS=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -24,14 +28,28 @@ while [ $# -gt 0 ]; do
     --base) BASE="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --uncommitted) UNCOMMITTED=1; shift ;;
-    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --paths) PATHS="$2"; shift 2 ;;
+    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "bundle.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
+# SPEC always starts with "--" so "${SPEC[@]}" is never an empty expansion
+# (bash 3.2 + set -u); a bare trailing "--" means "no path filter" to git.
+SPEC=(--)
+if [ -n "$PATHS" ]; then
+  IFS=',' read -r -a globs <<< "$PATHS"
+  SPEC+=("${globs[@]}")
+fi
+
 cd "$REPO"
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "bundle.sh: not a git repo: $REPO" >&2; exit 2; }
 
+if [ -z "$BASE" ]; then
+  # Prefer the remote's actual default branch — a migrated repo may keep a
+  # stale origin/master alongside the real origin/main.
+  BASE="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+fi
 if [ -z "$BASE" ]; then
   for cand in origin/master origin/main master main; do
     if git rev-parse --verify --quiet "$cand^{commit}" >/dev/null; then BASE="$cand"; break; fi
@@ -46,20 +64,35 @@ TS="$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 
 if [ "$UNCOMMITTED" -eq 1 ]; then
-  git diff "$MERGE_BASE" > "$OUT/diff.patch"
-  git diff --name-status "$MERGE_BASE" > "$OUT/files.txt"
-  git diff --stat "$MERGE_BASE" > "$OUT/stats.txt"
-  git ls-files --others --exclude-standard > "$OUT/untracked.txt"
+  git diff "$MERGE_BASE" "${SPEC[@]}" > "$OUT/diff.patch"
+  git diff --name-status "$MERGE_BASE" "${SPEC[@]}" > "$OUT/files.txt"
+  git diff --stat "$MERGE_BASE" "${SPEC[@]}" > "$OUT/stats.txt"
+  git diff --numstat "$MERGE_BASE" "${SPEC[@]}" > "$OUT/.numstat"
+  git ls-files --others --exclude-standard "${SPEC[@]}" > "$OUT/untracked.txt"
+  # git diff can't see untracked files — append their full contents as adds,
+  # or reviewers converge without ever seeing a brand-new file.
+  while IFS= read -r uf; do
+    printf 'A\t%s\n' "$uf" >> "$OUT/files.txt"
+    git diff --no-index -- /dev/null "$uf" >> "$OUT/diff.patch" || true
+    git diff --no-index --numstat -- /dev/null "$uf" >> "$OUT/.numstat" || true
+  done < "$OUT/untracked.txt"
 else
-  git diff "$MERGE_BASE" HEAD > "$OUT/diff.patch"
-  git diff --name-status "$MERGE_BASE" HEAD > "$OUT/files.txt"
-  git diff --stat "$MERGE_BASE" HEAD > "$OUT/stats.txt"
+  git diff "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/diff.patch"
+  git diff --name-status "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/files.txt"
+  git diff --stat "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/stats.txt"
+  git diff --numstat "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/.numstat"
+fi
+if [ ! -s "$OUT/files.txt" ]; then
+  echo "bundle.sh: no changes vs $BASE (merge-base $MERGE_BASE) — wrong --base, or forgot --uncommitted?" >&2
+  exit 1
 fi
 git log --reverse --format='%h %s%n%b' "$MERGE_BASE..HEAD" > "$OUT/commits.txt"
 
 # Changed test files, and candidate tests matched by name tokens of changed
 # source files (camelCase split at case boundaries, snake tokens >= 5 chars).
-awk '{print $NF}' "$OUT/files.txt" > "$OUT/.paths"
+# name-status rows are TAB-separated (last field = new path, also for renames);
+# awk must split on TAB only or paths with spaces get mangled.
+awk -F'\t' '{print $NF}' "$OUT/files.txt" > "$OUT/.paths"
 grep -E '(^|/)tests?/' "$OUT/.paths" > "$OUT/tests_changed.txt" || true
 grep -Ev '(^|/)tests?/' "$OUT/.paths" | while IFS= read -r f; do
   b="${f##*/}"; b="${b%%.*}"
@@ -67,12 +100,12 @@ grep -Ev '(^|/)tests?/' "$OUT/.paths" | while IFS= read -r f; do
     | sed 's/\([a-z0-9]\)\([A-Z]\)/\1_\2/g' \
     | tr '[:upper:]' '[:lower:]' \
     | tr -cs 'a-z0-9' '\n'
-done | awk 'length($0) >= 5' | sort -u | head -20 > "$OUT/.tokens"
+done | awk 'length($0) >= 5' | sort -u | head -20 > "$OUT/.tokens" || true
 
 : > "$OUT/tests_candidates.txt"
 if [ -s "$OUT/.tokens" ]; then
   pat="$(paste -sd'|' - < "$OUT/.tokens")"
-  git ls-files -- 'tests/*' '*/tests/*' 2>/dev/null \
+  git ls-files -- 'tests/*' '*/tests/*' 'test/*' '*/test/*' 2>/dev/null \
     | grep -E -i "($pat)" | sort -u | head -200 > "$OUT/tests_candidates.txt" || true
 fi
 rm -f "$OUT/.paths" "$OUT/.tokens"
@@ -87,7 +120,9 @@ rm -f "$OUT/.paths" "$OUT/.tokens"
   echo "created=$TS"
   echo "files_changed=$(wc -l < "$OUT/files.txt" | tr -d ' ')"
   echo "diff_lines=$(wc -l < "$OUT/diff.patch" | tr -d ' ')"
+  echo "changed_lines=$(awk '{ins += $1; del += $2} END {print ins + del + 0}' "$OUT/.numstat")"
 } > "$OUT/meta.env"
+rm -f "$OUT/.numstat"
 
 sed 's/^/  /' "$OUT/meta.env"
 echo "$OUT"

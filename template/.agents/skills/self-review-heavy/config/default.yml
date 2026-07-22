@@ -52,7 +52,8 @@ stages:
     runner: codex
     model: gpt-5.6-sol
     effort: xhigh
-    mode: exec            # exec = structured findings JSON; review = codex's native reviewer
+    mode: exec            # the only ledger-compatible mode. (review = codex's native
+                          # reviewer, prose output — a manual fallback, never a pipeline stage)
     rubric: references/stage-3-cross.md
 
 iterations:

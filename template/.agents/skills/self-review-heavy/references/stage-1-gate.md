@@ -25,8 +25,10 @@ JSON.
    `{tests}` from `tests_changed.txt`, the plausible entries of
    `tests_candidates.txt`, and tests the change itself adds. Write the checks
    TSV (`name<TAB>command`), run `scripts/checks.sh --file <tsv> --out
-   <bundle>`, read `checks.tsv`. A failed **required** check is a blocker
-   finding, with the log tail as evidence.
+   <bundle> -C <repo>` (check commands run with cwd = the target repo — don't
+   omit `-C` or they run wherever *you* are), read `checks.tsv` (it holds only
+   the latest run). A failed **required** check is a blocker finding, with the
+   log tail as evidence.
 3. **Test coverage.** New behavior with no new or changed test is a major
    finding (a repo's rules may raise or lower this).
 4. **Honesty rule.** A check you could not run — host unreachable, no test
