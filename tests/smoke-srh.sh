@@ -141,16 +141,23 @@ rfp="$(jq -r .fp "$WORK/led-rej/ledger.jsonl")"
 "$SRH/ledger.sh" bump "$WORK/led-rej" >/dev/null
 out="$("$SRH/ledger.sh" add "$WORK/led-rej" --source cross "$WORK/esc2.json" 2>/dev/null | tail -1)"
 [ "$out" = "new=0 dup=1 reopened=0 escalated=0 open=0" ] || fail "rejected re-report: got '$out'"
-rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
-[ "$rc" -eq 0 ] || fail "re-reported rejected finding must not block (rc=$rc)"
-# ...but the higher-severity evidence is adopted in place, so a manual
-# re-triage to contested inherits the REAL rank and blocks at the gate.
+[ "$(jq -r .status "$WORK/led-rej/ledger.jsonl")" = "rejected" ] \
+  || fail "rejected re-report must not change the status"
+# The higher-severity evidence is adopted in place AND counts as news for
+# one round (bounded — severity is monotone): an accepted fix of the
+# escalated claim must survive a clean round, and a manual re-triage to
+# contested inherits the REAL rank.
 [ "$(jq -r .severity "$WORK/led-rej/ledger.jsonl")" = "blocker" ] \
   || fail "rejected re-report did not adopt the higher severity"
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
+[ "$rc" -eq 1 ] || fail "escalated adoption must count as news this round (rc=$rc)"
+"$SRH/ledger.sh" bump "$WORK/led-rej" >/dev/null
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "still-rejected escalation must stop blocking after one clean round (rc=$rc)"
 "$SRH/ledger.sh" resolve "$WORK/led-rej" "$rfp" contested >/dev/null
 rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
 [ "$rc" -eq 1 ] || fail "manually contested escalated re-report must block (rc=$rc)"
-pass "open findings escalate in place; rejected ones never auto-reopen but adopt evidence"
+pass "open findings escalate in place; rejected ones adopt evidence + news, never auto-reopen"
 
 # Adoption must not be once-per-round: stages ingest separately, and the
 # SECOND same-round re-report may be the one carrying blocker evidence.

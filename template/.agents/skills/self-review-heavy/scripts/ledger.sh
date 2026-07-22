@@ -24,7 +24,9 @@
 #         prints a re-triage warning and stays a dup (the orchestrator
 #         decides, or the run would loop to exhaustion) — but a
 #         higher-severity re-report adopts the new rank and evidence in
-#         place, so a manual re-triage inherits the real severity.
+#         place AND counts as convergence news (severity is monotone, so
+#         this is bounded), so a manual re-triage inherits the real
+#         severity and an accepted fix still needs a clean round.
 #         Prints "new=N dup=M reopened=R escalated=E open=K".
 # converged exit codes: 0 converged · 1 not yet · 3 max-rounds exhausted.
 #         Only entries at/above --gate severity count as blocking or as
@@ -133,9 +135,14 @@ case "$CMD" in
           # may be the one carrying the blocker-grade evidence.
           dup=$((dup + 1))
           if [ "$(sev_rank "$in_sev")" -gt "$(sev_rank "$prev_sev")" ]; then
+            # .round = $r: the adoption is convergence news — if the
+            # orchestrator accepts and fixes the escalated claim, the fix
+            # must still survive a clean round like any other. Bounded churn:
+            # severity is monotone, so a rejected entry can force at most two
+            # such rounds over its lifetime.
             echo "ledger.sh: add: re-report of $prev_status finding $fp by $SOURCE at HIGHER severity ($prev_sev → $in_sev; evidence adopted) — re-triage manually if the rejection no longer holds: $title" >&2
             jq -c --arg fp "$fp" --arg src "$SOURCE" --argjson r "$ROUND" --argjson item "$item" \
-              'if .fp == $fp then .last_seen_round = $r
+              'if .fp == $fp then .round = $r | .last_seen_round = $r
                  | .severity = $item.severity | .line = ($item.line // .line)
                  | .body = $item.body | .confidence = ($item.confidence // null)
                  | .source = $src
