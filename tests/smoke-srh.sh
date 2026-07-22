@@ -43,12 +43,14 @@ rc=0; "$SRH/ledger.sh" add "$D" --source deep "$WORK/bad.json" >/dev/null 2>&1 |
 [ "$rc" -eq 2 ] || fail "malformed severity must be rejected (rc=$rc)"
 pass "ledger add rejects schema-invalid findings"
 
-# Empty file → "(change-wide)" sentinel; empty title → skipped with a warning;
-# the rest of the batch still lands (one bad entry must not sink nine good ones).
+# Empty file → "(change-wide)" sentinel; empty AND whitespace-only titles →
+# skipped with a warning; the rest of the batch still lands (one bad entry
+# must not sink nine good ones).
 cat > "$WORK/edge.json" <<'EOF'
 {"findings":[
  {"severity":"minor","file":"","title":"Change-wide concern","body":"b"},
  {"severity":"minor","file":"x.c","title":"","body":"b"},
+ {"severity":"minor","file":"w.c","title":"   ","body":"b"},
  {"severity":"minor","file":"y.c","title":"Normal finding","body":"b"}]}
 EOF
 "$SRH/ledger.sh" init "$WORK/led-edge" >/dev/null
@@ -204,6 +206,13 @@ grep -q 'src/NewThing.cpp' "$B3/files.txt" || fail "bundle: untracked file missi
 grep -q 'brand new logic' "$B3/diff.patch" || fail "bundle: untracked content missing from diff.patch"
 grep -q 'unicode content here' "$B3/diff.patch" || fail "bundle: non-ASCII untracked content missing"
 pass "bundle.sh includes untracked contents (incl. non-ASCII names) under --uncommitted"
+
+# --out INSIDE the worktree must not bundle its own artifacts: the untracked
+# scan excludes OUT, while other untracked files still ride along.
+B5="$("$SRH/bundle.sh" -C "$R" --base main --uncommitted --out "$R/innerbundle" | tail -1)"
+grep -q 'innerbundle' "$B5/files.txt" && fail "bundle: reviewed its own artifacts under --out inside the worktree"
+grep -q 'src/NewThing.cpp' "$B5/files.txt" || fail "bundle: OUT exclusion dropped a real untracked file"
+pass "bundle.sh excludes an in-worktree --out dir from the reviewed diff"
 
 # Auto base detection must survive a dangling origin/HEAD (post-migration
 # fetch --prune state) by falling back to a verified candidate.
