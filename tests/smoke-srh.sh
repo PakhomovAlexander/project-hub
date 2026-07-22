@@ -155,7 +155,7 @@ rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
 rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
 [ "$rc" -eq 0 ] || fail "still-rejected escalation must stop blocking after one clean round (rc=$rc)"
 "$SRH/ledger.sh" resolve "$WORK/led-rej" "$rfp" contested >/dev/null
-rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" >/dev/null || rc=$?
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-rej" --max-rounds 6 >/dev/null || rc=$?
 [ "$rc" -eq 1 ] || fail "manually contested escalated re-report must block (rc=$rc)"
 pass "open findings escalate in place; rejected ones adopt evidence + news, never auto-reopen"
 
