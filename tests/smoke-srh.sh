@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # smoke-srh.sh — behavioral test for the self-review-heavy skill's scripts:
 # the ledger lifecycle (fingerprint dedup, reopen-on-re-report — which counts
-# as convergence news — resolve, the three convergence exit codes, schema
-# validation and empty-field handling on add), bundle.sh on scratch repos
-# (test-only diffs, untracked files incl. non-ASCII names, dangling
-# origin/HEAD fallback), and checks.sh recording (trailing newline, re-run
-# truncation, input/output collision, vacuous runs).
+# as convergence news, in the same round too — resolve, news accounting for
+# rejected vs fixed, dispute and benchmark-demand tracking, the three
+# convergence exit codes, schema validation and empty-field handling on add,
+# clean errors on an uninitialized dir), bundle.sh on scratch repos (test-only
+# diffs, untracked files incl. non-ASCII names, shell-metacharacter path
+# detection, dangling origin/HEAD fallback), and checks.sh (placeholder
+# substitution with shell-quoting, trailing newline, re-run truncation,
+# input/output collision, vacuous runs).
 # Offline; requires git + jq (like the skill itself).
 #
 # Run from the template repo root:  tests/smoke-srh.sh
@@ -104,6 +107,81 @@ rc=0; "$SRH/ledger.sh" converged "$D" >/dev/null || rc=$?
 rc=0; "$SRH/ledger.sh" converged "$D" >/dev/null || rc=$?
 [ "$rc" -eq 0 ] || fail "clean round after the re-fix must converge (rc=$rc)"
 pass "re-report reopens, counts as news, and needs a clean round to converge"
+
+# The gate is re-run WITHIN a round after fixes ("fix, re-run the gate"), and
+# that re-run is exactly where a fix that didn't hold surfaces — so a
+# re-report of a fixed finding must reopen with no bump in between. Round-
+# guarding this let a still-broken build read as zero open blockers.
+"$SRH/ledger.sh" init "$WORK/led-same" >/dev/null
+cat > "$WORK/gate.json" <<'EOF'
+{"findings":[{"severity":"blocker","file":"build","title":"Build fails","body":"linker error"}]}
+EOF
+"$SRH/ledger.sh" add "$WORK/led-same" --source gate "$WORK/gate.json" >/dev/null
+gfp="$(jq -r .fp "$WORK/led-same/ledger.jsonl")"
+"$SRH/ledger.sh" resolve "$WORK/led-same" "$gfp" fixed --note "patched" >/dev/null
+out="$("$SRH/ledger.sh" add "$WORK/led-same" --source gate "$WORK/gate.json" | tail -1)"
+[ "$out" = "new=0 dup=0 reopened=1 escalated=0 open=1" ] || fail "same-round re-report: got '$out'"
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-same" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "a fix that didn't hold must block, same round or not (rc=$rc)"
+pass "a same-round gate re-run catches a fix that didn't hold"
+
+# News accounting. A round that produced only FALSE POSITIVES added no new
+# external signal, so it must not buy itself another round; a round that
+# produced a FIX must, because that new code has not been reviewed yet.
+cat > "$WORK/fp1.json" <<'EOF'
+{"findings":[{"severity":"major","file":"a.c","title":"False alarm","body":"b"}]}
+EOF
+"$SRH/ledger.sh" init "$WORK/led-news" >/dev/null
+"$SRH/ledger.sh" add "$WORK/led-news" --source deep "$WORK/fp1.json" >/dev/null
+"$SRH/ledger.sh" resolve "$WORK/led-news" "$(jq -r .fp "$WORK/led-news/ledger.jsonl")" \
+  rejected --note "traced: guarded upstream" >/dev/null
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-news" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "an all-false-positive round must converge (rc=$rc)"
+"$SRH/ledger.sh" init "$WORK/led-news2" >/dev/null
+"$SRH/ledger.sh" add "$WORK/led-news2" --source deep "$WORK/fp1.json" >/dev/null
+"$SRH/ledger.sh" resolve "$WORK/led-news2" "$(jq -r .fp "$WORK/led-news2/ledger.jsonl")" fixed >/dev/null
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-news2" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "a fix must still cost a clean round (rc=$rc)"
+pass "rejections clear convergence news; fixes keep it"
+
+# Disputes and benchmark demands arrive with the findings and become ledger
+# state — `unverified` names the claims a stage never took a position on,
+# which are UNVERIFIED, not confirmed.
+"$SRH/ledger.sh" init "$WORK/led-dis" >/dev/null
+cat > "$WORK/deep2.json" <<'EOF'
+{"findings":[
+ {"severity":"major","file":"a.c","title":"Claim one","body":"b"},
+ {"severity":"major","file":"b.c","title":"Claim two","body":"b"}],
+ "benchmark_demands":[{"claim":"the rewrite is faster","why":"hot path","suggested_method":"interleaved A/B, 7 runs"}]}
+EOF
+"$SRH/ledger.sh" add "$WORK/led-dis" --source deep "$WORK/deep2.json" >/dev/null
+d1="$("$SRH/ledger.sh" list "$WORK/led-dis" | jq -r 'select(.file == "a.c").fp')"
+cat > "$WORK/cross2.json" <<EOF
+{"findings":[],"disputes":[
+ {"fp":"$d1","position":"refute","reason":"guarded at a.c:12"},
+ {"fp":"nosuchfp0000","position":"confirm","reason":"dangling reference"}]}
+EOF
+"$SRH/ledger.sh" add "$WORK/led-dis" --source cross "$WORK/cross2.json" >/dev/null 2>&1
+[ "$("$SRH/ledger.sh" unverified "$WORK/led-dis" --source cross | jq -r .title)" = "Claim two" ] \
+  || fail "unverified must name exactly the claim cross never disputed"
+[ "$("$SRH/ledger.sh" list "$WORK/led-dis" \
+     | jq -r --arg fp "$d1" 'select(.fp == $fp).disputes[0].position')" = refute ] \
+  || fail "dispute was not recorded on the finding"
+did="$("$SRH/ledger.sh" demands "$WORK/led-dis" --status open | jq -r .id)"
+[ -n "$did" ] || fail "benchmark demand was not ingested"
+"$SRH/ledger.sh" demand "$WORK/led-dis" "$did" met --note "median -8% over 9 runs" >/dev/null
+[ -z "$("$SRH/ledger.sh" demands "$WORK/led-dis" --status open)" ] || fail "met demand still open"
+"$SRH/ledger.sh" report "$WORK/led-dis" | grep -q 'the rewrite is faster' \
+  || fail "report drops benchmark demands"
+pass "disputes and benchmark demands become tracked ledger state"
+
+# An uninitialized directory must fail loudly instead of leaking a raw cat/jq
+# error from inside a pipeline (where converged's exit code read as "not yet").
+for c in round list report converged; do
+  rc=0; "$SRH/ledger.sh" "$c" "$WORK/never-init" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] || fail "ledger.sh $c on an uninitialized dir must exit 2 (rc=$rc)"
+done
+pass "ledger commands refuse an uninitialized directory"
 
 # A reopen adopts the re-report's severity and evidence: a round-1 minor
 # re-reported as a blocker must block on its NEW severity, not the stale one.
@@ -284,6 +362,35 @@ B4="$("$SRH/bundle.sh" -C "$R2" --out "$WORK/bundle4" | tail -1)"
 grep -q 'base=origin/main' "$B4/meta.env" || fail "bundle: dangling origin/HEAD not survived"
 pass "bundle.sh falls back past a dangling origin/HEAD"
 
+# Shell-metacharacter filenames get their own list: substituted unquoted into
+# a check command they are arbitrary code execution. Unusual-but-benign names
+# (non-ASCII, spaces) must NOT be flagged or the signal is noise — and they
+# must survive as real paths, not git's \NNN C-quoting, which nothing can open.
+R3="$WORK/repo3"
+git init -q -b main "$R3"
+(
+  cd "$R3"
+  git config user.email srh@test && git config user.name srh
+  mkdir -p src tests
+  echo base > src/a.c
+  git add -A && git commit -qm base
+  git switch -qc names
+  : > 'tests/x; echo PWNED #.sh'
+  : > 'tests/plain_name_test.sh'
+  : > 'src/тест.cpp'
+  : > 'src/has space.c'
+  git add -A && git commit -qm "unusual names"
+)
+B7="$("$SRH/bundle.sh" -C "$R3" --base main --out "$WORK/bundle7" 2>/dev/null | tail -1)"
+[ "$(wc -l < "$B7/unsafe_paths.txt" | tr -d ' ')" = "1" ] \
+  || fail "unsafe_paths.txt must flag exactly one path, got: $(cat "$B7/unsafe_paths.txt")"
+grep -q 'echo PWNED' "$B7/unsafe_paths.txt" || fail "metacharacter path was not flagged"
+grep -q 'unsafe_paths=1' "$B7/meta.env" || fail "meta.env lacks the unsafe_paths count"
+grep -q "A${TAB}src/тест.cpp" "$B7/files.txt" \
+  || fail "non-ASCII path was C-quoted in files.txt — it is not openable in that form"
+grep -q "A${TAB}src/has space.c" "$B7/files.txt" || fail "a path with a space went missing"
+pass "bundle.sh flags metacharacter paths and keeps benign unusual ones raw"
+
 # --- checks.sh records pass/fail -------------------------------------------
 printf 'good\ttrue\nbad\tfalse\n' > "$WORK/checks.tsv"
 rc=0; "$SRH/checks.sh" --file "$WORK/checks.tsv" --out "$WORK/cb" -C "$WORK" >/dev/null || rc=$?
@@ -316,5 +423,28 @@ printf '# comments only\n' > "$WORK/c3.tsv"
 rc=0; "$SRH/checks.sh" --file "$WORK/c3.tsv" --out "$WORK/cb5" -C "$WORK" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 1 ] || fail "vacuous run must exit non-zero (rc=$rc)"
 pass "checks.sh refuses self-truncation and vacuous green runs"
+
+# --subst fills {placeholders} from a file of values, shell-quoting each. This
+# is the injection pin: selectors come from the diff, commands run through
+# `bash -c`, and an unquoted `tests/x; touch <marker> #.sh` would run.
+marker="$WORK/PWNED"
+printf 'tests/x; touch %s #.sh\ntests/plain_test.sh\n' "$marker" > "$WORK/sel.txt"
+printf 'related%secho SEL: {tests}\n' "$TAB" > "$WORK/c-subst.tsv"
+"$SRH/checks.sh" --file "$WORK/c-subst.tsv" --out "$WORK/cb6" -C "$WORK" \
+  --subst tests="$WORK/sel.txt" >/dev/null
+[ ! -e "$marker" ] || fail "--subst let a metacharacter path execute"
+grep -q 'tests/plain_test.sh' "$WORK/cb6/checks/related.log" || fail "--subst dropped a selector"
+grep -q 'touch' "$WORK/cb6/checks/related.log" \
+  || fail "--subst did not pass the hostile path through as literal text"
+pass "checks.sh --subst quotes selectors instead of executing them"
+
+# A {placeholder} nobody filled means that check verified nothing — say so
+# rather than letting it pass or fail on literal text.
+printf 'lint%strue {nobodyfilledthis}\n' "$TAB" > "$WORK/c-unfilled.tsv"
+"$SRH/checks.sh" --file "$WORK/c-unfilled.tsv" --out "$WORK/cb7" -C "$WORK" \
+  2>"$WORK/unfilled.err" >/dev/null
+grep -q 'unfilled placeholder' "$WORK/unfilled.err" \
+  || fail "checks.sh did not report an unfilled placeholder"
+pass "checks.sh reports unfilled placeholders"
 
 echo "smoke-srh: all good"

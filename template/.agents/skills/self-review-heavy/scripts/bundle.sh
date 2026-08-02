@@ -84,7 +84,7 @@ fi
 
 if [ "$UNCOMMITTED" -eq 1 ]; then
   git diff "$MERGE_BASE" "${SPEC[@]}" > "$OUT/diff.patch"
-  git diff --name-status "$MERGE_BASE" "${SPEC[@]}" > "$OUT/files.txt"
+  git -c core.quotePath=false diff --name-status "$MERGE_BASE" "${SPEC[@]}" > "$OUT/files.txt"
   git diff --stat "$MERGE_BASE" "${SPEC[@]}" > "$OUT/stats.txt"
   git diff --numstat "$MERGE_BASE" "${SPEC[@]}" > "$OUT/.numstat"
   # git diff can't see untracked files — append their full contents as adds,
@@ -108,7 +108,7 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
   rm -f "$OUT/.untracked0"
 else
   git diff "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/diff.patch"
-  git diff --name-status "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/files.txt"
+  git -c core.quotePath=false diff --name-status "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/files.txt"
   git diff --stat "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/stats.txt"
   git diff --numstat "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/.numstat"
 fi
@@ -121,8 +121,29 @@ git log --reverse --format='%h %s%n%b' "$MERGE_BASE..HEAD" > "$OUT/commits.txt"
 # Changed test files, and candidate tests matched by name tokens of changed
 # source files (camelCase split at case boundaries, snake tokens >= 5 chars).
 # name-status rows are TAB-separated (last field = new path, also for renames);
-# awk must split on TAB only or paths with spaces get mangled.
+# awk must split on TAB only or paths with spaces get mangled. The listings
+# above run with core.quotePath=false so a UTF-8 name (тест.cpp) is the real
+# path here and not a \NNN escape sequence nothing can open; git still quotes
+# names holding a newline or a quote, which is precisely what makes a leading
+# " a reliable "this row is not a usable path" signal below.
 awk -F'\t' '{print $NF}' "$OUT/files.txt" > "$OUT/.paths"
+
+# Paths whose names carry shell metacharacters, or that git C-quoted (leading
+# ", which it does for control characters and embedded quotes). Two reasons to
+# single these out: pasted unquoted into a check command they are arbitrary
+# code execution — which is why selectors must be rendered with
+# `checks.sh --subst` and never by hand — and a filename like that appearing
+# in a diff is a hygiene finding in its own right. Written as a list rather
+# than dropped, because the gate still has to see that the file changed.
+# index()-per-character instead of a regex: the metacharacter set is exactly
+# what a bracket expression needs escaped, and getting that wrong silently
+# widens or empties the match.
+awk 'index($0, "\"") == 1 { print; next }
+     { bad = ";&|<>()$`\\!*?\047\"" "\n"
+       for (i = 1; i <= length(bad); i++)
+         if (index($0, substr(bad, i, 1)) > 0) { print; next } }' \
+  "$OUT/.paths" > "$OUT/unsafe_paths.txt" || true
+
 grep -E '(^|/)tests?/' "$OUT/.paths" > "$OUT/tests_changed.txt" || true
 grep -Ev '(^|/)tests?/' "$OUT/.paths" | while IFS= read -r f; do
   b="${f##*/}"; b="${b%%.*}"
@@ -135,7 +156,7 @@ done | awk 'length($0) >= 5' | sort -u | head -20 > "$OUT/.tokens" || true
 : > "$OUT/tests_candidates.txt"
 if [ -s "$OUT/.tokens" ]; then
   pat="$(paste -sd'|' - < "$OUT/.tokens")"
-  git ls-files -- 'tests/*' '*/tests/*' 'test/*' '*/test/*' 2>/dev/null \
+  git -c core.quotePath=false ls-files -- 'tests/*' '*/tests/*' 'test/*' '*/test/*' 2>/dev/null \
     | grep -E -i "($pat)" | sort -u | head -200 > "$OUT/tests_candidates.txt" || true
 fi
 rm -f "$OUT/.paths" "$OUT/.tokens"
@@ -151,8 +172,13 @@ rm -f "$OUT/.paths" "$OUT/.tokens"
   echo "files_changed=$(wc -l < "$OUT/files.txt" | tr -d ' ')"
   echo "diff_lines=$(wc -l < "$OUT/diff.patch" | tr -d ' ')"
   echo "changed_lines=$(awk '{ins += $1; del += $2} END {print ins + del + 0}' "$OUT/.numstat")"
+  echo "unsafe_paths=$(wc -l < "$OUT/unsafe_paths.txt" | tr -d ' ')"
 } > "$OUT/meta.env"
 rm -f "$OUT/.numstat"
 
 sed 's/^/  /' "$OUT/meta.env"
+if [ -s "$OUT/unsafe_paths.txt" ]; then
+  echo "  ! shell-metacharacter paths in this diff — render selectors with checks.sh --subst, never by hand:" >&2
+  sed 's/^/    /' "$OUT/unsafe_paths.txt" >&2
+fi
 echo "$OUT"

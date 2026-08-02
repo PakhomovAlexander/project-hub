@@ -174,9 +174,15 @@ Work through the copied skeleton and make it real:
   template upgrades later). `/self-review-heavy` is the heavy pre-PR review pipeline —
   it needs `jq` (plus the codex CLI for its cross-model stage); wire a
   `config/<repo>.yml` profile per repo when you adopt it (`config/_example.yml` shows
-  the shape), or delete the directory and record it in `dropped:` if you won't use it.
-  If the team has other recurring processes, add one skill per process (a directory +
-  `SKILL.md`, `name` matching the directory).
+  the shape); or drop it — delete the directory **and** its stage runners
+  `.claude/agents/srh-*.md`, recording both in `dropped:`. If the team has other
+  recurring processes, add one skill per process (a directory + `SKILL.md`, `name`
+  matching the directory).
+- **`.claude/agents/`** — Claude Code subagent definitions that back a skill's stages
+  (`srh-gate`, `srh-deep-reviewer` for `/self-review-heavy`). They pin a model tier and
+  reasoning effort per stage, so leave them alone unless the hub wants different tiers.
+  Vendor-specific by nature: they're the Claude Code wiring for pipelines whose portable
+  half lives in `.agents/skills/`.
 - **`.claude/settings.json`** — resolve `{{CLONE_WORKSPACE}}` in
   `permissions.additionalDirectories` (single-repo: delete that key and the
   `make`/`repos.sh` entries in `permissions.allow`). Mirror the user's risky families into
@@ -224,7 +230,9 @@ After filling a file, **remove the `<!-- TEMPLATE: … -->` guidance comments** 
 
 ## 5. Wire it up and verify
 
-- Make the hooks and scripts executable: `chmod +x .claude/hooks/*.sh scripts/*.sh`.
+- Make the hooks and scripts executable — skills ship scripts too, and
+  `scripts/verify.sh` fails on any that aren't:
+  `chmod +x .claude/hooks/*.sh scripts/*.sh .agents/skills/*/scripts/*.sh`.
 - If multi-repo: `make repos` (links/clones the repos), then `make status` (branches +
   dirty state). Report what linked and what's missing — don't claim success you didn't see.
 - **If the user opted into linked-repo pointers (§2.9):** add a thin `AGENTS.md` to each

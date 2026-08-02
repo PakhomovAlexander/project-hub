@@ -94,7 +94,7 @@ your-project-hub/
 ├── Makefile · scripts/    # link/status the repos · worktrees · verify.sh self-check
 ├── repos.manifest         # the list of repos this hub coordinates
 ├── .agents/skills/        # /adr /tracker /resume /onboard-repo /verify /self-review-heavy (any agent)
-├── .claude/               # allow/ask permission lists + hooks (session brief, risky-cmd gate)
+├── .claude/               # permission lists, hooks (session brief, risky-cmd gate), agents/
 ├── .github/workflows/     # docs CI: markdownlint + offline link check
 ├── .markdownlint-cli2.jsonc # light, high-signal Markdown rules
 ├── docs/
