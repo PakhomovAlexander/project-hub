@@ -33,6 +33,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: risky-commands hook regression table
         run: tests/hook-test.sh
+      - name: session-brief hook behavior
+        run: tests/brief-test.sh
+      - name: session-stats aggregates on a synthetic transcript
+        run: tests/stats-test.sh
       - name: scaffold a hub from template/ and verify it
         run: tests/smoke-scaffold.sh
       - name: evolve the template and update a generated hub (UPDATE.md mechanics)

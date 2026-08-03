@@ -10,12 +10,14 @@
 #   make worktree-ls                 — list every agent worktree (hub + linked)
 #   make worktree-rm NAME=x          — tear an agent's workspaces down
 #
+#   make session-stats — where the agent harness spends (local transcript aggregates)
+#
 # TEMPLATE: for a single-repo project, delete the `repos*`/`status`/`list` targets along
 # with scripts/repos.sh and repos.manifest, and drop the `worktree-repo` target (keep the
 # other `worktree*` targets — parallel agents on the hub's own docs still collide).
 
 .PHONY: help repos repos-check status list \
-	worktree worktree-repo worktree-ls worktree-rm
+	worktree worktree-repo worktree-ls worktree-rm session-stats
 
 help:
 	@echo "Targets:"
@@ -27,6 +29,7 @@ help:
 	@echo "  make worktree-repo NAME=x REPO=y — private worktree of one linked repo"
 	@echo "  make worktree-ls                 — list every agent worktree (hub + linked)"
 	@echo "  make worktree-rm NAME=x          — tear an agent's workspaces down"
+	@echo "  make session-stats — where the agent harness spends (local transcript aggregates)"
 
 repos:
 	scripts/repos.sh
@@ -52,3 +55,7 @@ worktree-ls:
 
 worktree-rm:
 	@scripts/worktree.sh rm "$(NAME)"
+
+# Harness self-measurement — see the note in CLAUDE.md
+session-stats:
+	@scripts/session-stats.sh
