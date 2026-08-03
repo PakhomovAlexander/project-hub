@@ -100,9 +100,11 @@ Map `template/<path>` → `<hub>/<path>`. For each path in the delta, in this or
 
 ## 5. Finish and verify
 
-- `chmod +x` everything under `scripts/`, `.claude/hooks/`, and
-  `.agents/skills/*/scripts/` — you *wrote* those files rather than copying them, so
-  they came out non-executable no matter what mode the template has them in.
+- Restore the exec bit — you *wrote* those files rather than copying them, so they came
+  out non-executable no matter what mode the template has them in:
+  `chmod +x .claude/hooks/*.sh scripts/*.sh` then
+  `find .agents/skills -name '*.sh' -exec chmod +x {} +` (`find`, not a third glob —
+  an unmatched glob aborts the whole command under zsh).
 - Run the hub's `scripts/verify.sh` — the **freshly updated** one, so new checks apply.
   Fix everything it flags.
 - Bump `.hub-meta.yml`: `template.sha` → the sha you updated to; add or refresh an

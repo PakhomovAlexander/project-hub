@@ -232,7 +232,11 @@ After filling a file, **remove the `<!-- TEMPLATE: … -->` guidance comments** 
 
 - Make the hooks and scripts executable — skills ship scripts too, and
   `scripts/verify.sh` fails on any that aren't:
-  `chmod +x .claude/hooks/*.sh scripts/*.sh .agents/skills/*/scripts/*.sh`.
+  `chmod +x .claude/hooks/*.sh scripts/*.sh` then
+  `find .agents/skills -name '*.sh' -exec chmod +x {} +`. (Use `find`, not a third
+  glob: a hub that dropped the only skill shipping scripts has nothing for it to
+  match, and under zsh — the macOS default — an unmatched glob aborts the whole
+  command, leaving *every* hook and script non-executable.)
 - If multi-repo: `make repos` (links/clones the repos), then `make status` (branches +
   dirty state). Report what linked and what's missing — don't claim success you didn't see.
 - **If the user opted into linked-repo pointers (§2.9):** add a thin `AGENTS.md` to each

@@ -447,4 +447,61 @@ grep -q 'unfilled placeholder' "$WORK/unfilled.err" \
   || fail "checks.sh did not report an unfilled placeholder"
 pass "checks.sh reports unfilled placeholders"
 
+# --- codex-review.sh ------------------------------------------------------
+# Argument validation runs BEFORE the `command -v codex` guard, so all of it is
+# testable with no CLI, no network and no credentials. Without these the
+# --mode guard (itself a fix from an earlier review round) could be deleted
+# and the suite would stay green while stage 3 silently ran a different mode.
+printf 'prompt\n' > "$WORK/prompt.md"
+for bad in "--mode bogus --prompt-file $WORK/prompt.md --out $WORK/o.json" \
+           "--prompt-file $WORK/prompt.md" \
+           "--out $WORK/o.json" \
+           "--nope x"; do
+  rc=0
+  # shellcheck disable=SC2086
+  env PATH=/usr/bin:/bin "$SRH/codex-review.sh" $bad >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] || fail "codex-review.sh '$bad' must exit 2, got $rc"
+done
+pass "codex-review.sh validates arguments before it needs the CLI"
+
+# A missing CLI is its own exit code — the skill reports a skipped stage rather
+# than absorbing it silently, so this must not be confused with a usage error.
+rc=0
+env PATH=/usr/bin:/bin "$SRH/codex-review.sh" --prompt-file "$WORK/prompt.md" \
+  --out "$WORK/o.json" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 127 ] || fail "a missing codex CLI must exit 127, got $rc"
+pass "codex-review.sh reports a missing CLI distinctly from a usage error"
+
+# With a stub CLI on PATH: a non-JSON answer must NOT reach the ledger. This is
+# the guard between a malformed cross-model reply and an ingest that quietly
+# drops stage 3's findings.
+mkdir -p "$WORK/stub"
+cat > "$WORK/stub/codex" <<'EOF'
+#!/usr/bin/env bash
+# Minimal codex stand-in: honours -o <file> and writes whatever CODEX_STUB_BODY says.
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift 2 ;; *) shift ;; esac
+done
+[ -n "$out" ] && printf '%s' "${CODEX_STUB_BODY:-not json at all}" > "$out"
+exit "${CODEX_STUB_RC:-0}"
+EOF
+chmod +x "$WORK/stub/codex"
+rc=0
+PATH="$WORK/stub:$PATH" "$SRH/codex-review.sh" --prompt-file "$WORK/prompt.md" \
+  --out "$WORK/o.json" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 3 ] || fail "a non-JSON codex answer must exit 3, got $rc"
+
+# …and a well-formed one succeeds, so the guard above is rejecting the body and
+# not simply failing on everything.
+rc=0
+CODEX_STUB_BODY='{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}' \
+  PATH="$WORK/stub:$PATH" "$SRH/codex-review.sh" --prompt-file "$WORK/prompt.md" \
+  --out "$WORK/o2.json" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "a schema-shaped codex answer must succeed, got $rc"
+"$SRH/ledger.sh" init "$WORK/led-cx" >/dev/null
+"$SRH/ledger.sh" add "$WORK/led-cx" --source cross "$WORK/o2.json" >/dev/null \
+  || fail "codex-review.sh output is not ledger-ingestible"
+pass "codex-review.sh rejects a non-JSON answer and accepts a schema-shaped one"
+
 echo "smoke-srh: all good"
