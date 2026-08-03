@@ -18,7 +18,7 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required for this test"
 
 TMP="$(mktemp -d)"
 SCRATCH_BASE="/tmp/claude-$(id -u)"
-# shellcheck disable=SC2329  # invoked via the EXIT trap
+# shellcheck disable=SC2329,SC2317  # invoked via the EXIT trap
 cleanup() {
   for d in "$TMP/hub-a" "$TMP/hub-b" "$TMP/hub-c" "$TMP/hub-d"; do
     rm -rf "${SCRATCH_BASE:?}/$(printf '%s' "$d" | tr '/.' '--')" 2>/dev/null || true
