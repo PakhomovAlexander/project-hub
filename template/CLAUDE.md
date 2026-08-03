@@ -15,8 +15,12 @@ The two imports above are binding: [`AGENTS.md`](AGENTS.md) is the **working agr
   are pre-allowed, risky families prompt before running (`permissions.ask` plus the
   PreToolUse hook), and `additionalDirectories` grants access to the linked clones in
   `{{CLONE_WORKSPACE}}`.
-- Every session opens with a **hub brief** — tracker snapshot age + linked-repo status —
-  injected by `.claude/hooks/session-brief.sh`.
+- Every session opens with a **hub brief** — tracker snapshot age, the tracker's
+  in-flight rows, linked-repo status — and the same hook links `./.scratch` to the
+  session's scratchpad. All from `.claude/hooks/session-brief.sh`.
+- `make session-stats` aggregates this hub's local Claude Code transcripts into
+  harness-cost numbers (context bands, cache decomposition, permission-gate hits,
+  repeated commands). Local aggregates only; nothing is written or uploaded.
 - Skills: `/adr` · `/tracker` · `/resume` · `/onboard-repo` · `/verify` · `/update-hub` ·
   `/self-review-heavy`, loaded from [`.agents/skills/`](.agents/skills/) via the
   `.claude/skills` link. `/self-review-heavy`'s stage runners are the `srh-gate` and
