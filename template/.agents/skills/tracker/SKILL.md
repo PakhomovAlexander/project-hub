@@ -26,3 +26,7 @@ The tracker is only useful if it's current, and only trustworthy if it's honest.
      board is worse than an honest sparse one.
    - Merge ≠ done — respect the issue lifecycle in `docs/issue-lifecycle.md`.
    - Keep the diff minimal and factual; no cosmetic rewording.
+   - Archive, don't delete: when a dated point-in-time section (an old repo-branch
+     snapshot, a superseded status block) stops being current, move it to
+     `docs/tracker-archive.md` (create it on first use). The board stays short enough
+     to read — and to inject into the session brief — while history stays greppable.
