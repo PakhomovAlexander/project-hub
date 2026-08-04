@@ -9,7 +9,7 @@
 #                 Blank lines and lines starting with '#' are skipped.
 #   -C            directory to run the commands in (default: .)
 #   --halt        stop at the first failing check
-#   --subst       fill a {name} placeholder in every command from a file of
+#   --subst       fill a @@name@@ placeholder in every command from a file of
 #                 values, ONE PER LINE, each shell-quoted here and joined with
 #                 spaces. Repeatable. Always render selectors this way rather
 #                 than pasting them into the TSV yourself: values derived from
@@ -17,8 +17,8 @@
 #                 when the change under review is not yours, and commands run
 #                 through `bash -c` — an unquoted `tests/x; curl … | sh #.py`
 #                 is arbitrary code execution. Quoting here is mechanical and
-#                 cannot be forgotten. A {placeholder} left unfilled is
-#                 reported on stderr; treat it as a check you did not verify.
+#                 cannot be forgotten. A @@placeholder@@ left unfilled means the
+#                 check is NOT RUN and is recorded fail — it verified nothing.
 #
 # Writes <out>/checks/<name>.log per check and (re)writes <out>/checks.tsv —
 # truncated at start, so it always reflects only the latest run:
@@ -65,7 +65,7 @@ while [ $# -gt 0 ]; do
       # way the check did not test the change. Say so; the gate's honesty rule
       # turns "selector resolves to nothing" into a not-verified finding.
       if [ -z "$sval" ]; then
-        echo "checks.sh: --subst $sname: $sfile has no values — any check using {$sname} cannot verify anything and will be recorded fail" >&2
+        echo "checks.sh: --subst $sname: $sfile has no values — any check using @@${sname}@@ cannot verify anything and will be recorded fail" >&2
         SUBST_EMPTY="$SUBST_EMPTY $sname"
       fi
       SUBST_NAMES+=("$sname"); SUBST_VALS+=("$sval")
@@ -104,24 +104,22 @@ while IFS="$TAB" read -r name cmd || [ -n "$name" ]; do
   # everything, or nothing) records a pass that answers a different question.
   unverifiable=""
   for en in $SUBST_EMPTY; do
-    case "$cmd" in *"{$en}"*) unverifiable="$unverifiable {$en}" ;; esac
+    case "$cmd" in *"@@${en}@@"*) unverifiable="$unverifiable @@${en}@@" ;; esac
   done
 
   i=0
   while [ "$i" -lt "${#SUBST_NAMES[@]}" ]; do
     sn="${SUBST_NAMES[$i]}"; sv="${SUBST_VALS[$i]}"
-    cmd="${cmd//\{$sn\}/$sv}"
+    cmd="${cmd//@@$sn@@/$sv}"
     i=$((i + 1))
   done
-  # An unfilled {placeholder} means the check ran against literal text and
-  # proves nothing — say so rather than letting it pass or fail on its own.
-  # Placeholders are written bare, so a brace preceded by $ or a quote is
-  # somebody else's syntax: ${var}, awk '{print}', jq '{a:1}'. Matching those
-  # would train the gate to ignore the warning that makes it file a
-  # not-verified finding.
+  # An unfilled @@placeholder@@ means the check ran against literal text and
+  # proves nothing. DOUBLE braces, because single ones are ambiguous with the
+  # shell and its guests: `awk 'BEGIN {print}'` and `jq '. | {name}'` are
+  # ordinary commands, and a detector that flags them blocks a legitimate gate
+  # check. Nothing in sh/awk/jq emits @@name@@.
   left="$(printf '%s' "$cmd" \
-    | grep -oE "(^|[^\$'\"])\{[a-z_][a-z0-9_]*\}" \
-    | sed 's/^[^{]*//' | sort -u | tr '\n' ' ' || true)"
+    | grep -oE '@@[a-z_][a-z0-9_]*@@' | sort -u | tr '\n' ' ' || true)"
   [ -z "$left" ] || unverifiable="$unverifiable ${left% }"
 
   # Record it as a FAILURE rather than running it. stderr prose only becomes a

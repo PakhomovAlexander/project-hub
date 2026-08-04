@@ -28,7 +28,7 @@ your findings JSON.
 2. **Checks.** Never paste selectors into the checks TSV yourself. Write the
    candidate selectors — the entries of `tests_changed.txt`, the plausible
    entries of `tests_candidates.txt`, and tests the change itself adds — one
-   per line into `<bundle>/sel-tests.txt`, leave `{tests}` **literal** in the
+   per line into `<bundle>/sel-tests.txt`, leave `@@tests@@` **literal** in the
    TSV, and let the runner fill it:
 
    ```
@@ -49,7 +49,7 @@ your findings JSON.
    server up, selector resolves to nothing — is NOT a pass. Emit a major
    finding titled `not verified: <check name>` with the reason. Never report
    green you did not see. `checks.sh` warning that a check still holds an
-   unfilled `{placeholder}` is the same thing: that check verified nothing.
+   unfilled `@@placeholder@@` is the same thing: that check verified nothing.
 
    **An empty checks list is the same thing too.** The default profile ships
    `checks: []`, so a repo with no profile has nothing to run — and a gate

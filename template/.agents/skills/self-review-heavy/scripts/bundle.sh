@@ -115,10 +115,13 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
     # wrong. Exactly the plant-a-file case --uncommitted review invites.
     case "$uf" in
       *'"'* | *"$NL"* | *"$TABCH"* | *\\*)
-        printf 'A\t%s\n' "$(printf '%s' "$uf" | awk '
+        # The sentinel X survives awk's record split so a TRAILING newline is
+        # distinguishable from none; awk consumes the final separator, which
+        # otherwise turned "foo\n" into "foo" — a path that does not exist.
+        printf 'A\t%s\n' "$(printf '%sX' "$uf" | awk '
           { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); l[NR] = $0 }
           END { s = ""; for (i = 1; i <= NR; i++) s = s (i > 1 ? "\\n" : "") l[i]
-                printf "\"%s\"", s }')" >> "$OUT/files.txt"
+                sub(/X$/, "", s); printf "\"%s\"", s }')" >> "$OUT/files.txt"
         ;;
       *) printf 'A\t%s\n' "$uf" >> "$OUT/files.txt" ;;
     esac
@@ -126,6 +129,12 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
     # the expected exit 1 that just means "these files differ" — producing a
     # bundle that looks complete while a new file's contents are missing from
     # the diff reviewers read.
+    # git exits 1 both for "these differ" (expected) and for "cannot read that
+    # path" — so the status alone cannot tell a real failure from the normal
+    # case. Prove the file is readable first; then exit 1 unambiguously means
+    # "differs". Without this a file deleted between ls-files and here yields a
+    # bundle that lists the path but omits its contents.
+    [ -r "$uf" ] || { echo "bundle.sh: untracked file vanished or unreadable: $uf" >&2; exit 2; }
     drc=0; git diff --no-index -- /dev/null "$uf" >> "$OUT/diff.patch" || drc=$?
     [ "$drc" -le 1 ] || { echo "bundle.sh: cannot diff untracked file: $uf (git exit $drc)" >&2; exit 2; }
     drc=0; git diff --no-index --numstat -- /dev/null "$uf" >> "$OUT/.numstat" || drc=$?

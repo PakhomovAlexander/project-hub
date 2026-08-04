@@ -15,6 +15,7 @@
 #   ledger.sh demands    <dir> [--status open]          # benchmark demands, JSONL
 #   ledger.sh demand     <dir> <id> <met|dropped|open> [--note <text>]
 #   ledger.sh converged  <dir> [--clean-rounds 1] [--max-rounds 3] [--gate major]
+#                             [--require gate,deep,cross]
 #   ledger.sh report     <dir>                          # markdown summary
 #
 # add     appends findings not already fingerprinted (fp = hash of file+title)
@@ -45,6 +46,10 @@
 #         was given; this lists the claims it did NOT address (excluding ones
 #         it raised itself). Those are UNVERIFIED, not confirmed — re-ask, or
 #         say so in the report.
+# converged --require names the stages this run enabled: each must have a
+#         receipt for the CURRENT round whose verdict is not "block". Without
+#         it only the weak "has anything ever run?" check applies. Receipts are
+#         written by `add`, one per stage per round, in <dir>/stages.jsonl.
 # converged exit codes: 0 converged · 1 not yet · 3 max-rounds exhausted.
 #         Open benchmark demands also block: converging over an unmeasured
 #         claim means the report asserts evidence the run never gathered.
@@ -151,11 +156,17 @@ case "$CMD" in
     # declares all five top-level keys required, so their presence is what
     # separates "the stage finished and found nothing" from "the response was
     # cut off" — without this, {"findings":[]} converges the run.
-    jq -e 'has("verdict") and has("findings") and has("benchmark_demands") and has("disputes")
-           and (.findings | type == "array")
-           and (.benchmark_demands | type == "array")
-           and (.disputes | type == "array")' "$FINDINGS" >/dev/null \
-      || die "add: $FINDINGS is not a complete findings document (needs verdict, summary, findings[], benchmark_demands[], disputes[]) — a truncated reviewer answer must not be ingested as a clean review"
+    # -s (slurp) so a CONCATENATION of documents is one array, not a stream:
+    # jq returns the status of the LAST result, so a stream could carry a junk
+    # document past a validator that only saw the final good one.
+    jq -es 'length == 1 and (.[0] |
+             has("summary")
+             and (.verdict | type == "string")
+             and (.verdict == "approve" or .verdict == "request-changes" or .verdict == "block")
+             and (.findings | type == "array")
+             and (.benchmark_demands | type == "array")
+             and (.disputes | type == "array"))' "$FINDINGS" >/dev/null \
+      || die "add: $FINDINGS is not exactly one complete findings document (needs verdict in approve|request-changes|block, summary, findings[], benchmark_demands[], disputes[]) — a truncated or concatenated reviewer answer must not be ingested as a clean review"
     # Reject malformed findings up front: an out-of-enum severity would rank
     # as minor in `converged` and silently slip under the gate. Empty
     # file/title strings are handled per finding below, not rejected here —
@@ -206,6 +217,7 @@ case "$CMD" in
                  | .severity = $item.severity | .line = ($item.line // .line)
                  | .body = $item.body | .fix = ($item.fix // .fix) | .confidence = ($item.confidence // null)
                  | .source = $src
+                 | .disputes = []
                else . end' "$LEDGER" > "$LEDGER.tmp"
           else
             echo "ledger.sh: add: re-report of $prev_status finding $fp by $SOURCE — re-triage manually if the rejection no longer holds: $title" >&2
@@ -241,6 +253,7 @@ case "$CMD" in
                | .severity = $item.severity | .line = ($item.line // .line)
                | .body = $item.body | .fix = ($item.fix // .fix) | .confidence = ($item.confidence // null)
                | .source = $src
+               | .disputes = []
                | .note = "escalated: re-reported as " + $item.severity + " by " + $src + " in round " + ($r | tostring)
              else . end' "$LEDGER" > "$LEDGER.tmp"
           mv "$LEDGER.tmp" "$LEDGER"
@@ -311,8 +324,10 @@ case "$CMD" in
         dprev="$(jq -r --arg id "$did" 'select(.id == $id) | .status + "|" + (.round | tostring)' "$DEMANDS")"
         dstat="${dprev%%|*}"; dround="${dprev##*|}"
         if [ "$dstat" != open ] && [ "$dround" -lt "$ROUND" ]; then
-          jq -c --arg id "$did" --argjson r "$ROUND" \
-            'if .id == $id then .status = "open" | .round = $r
+          jq -c --arg id "$did" --arg src "$SOURCE" --argjson r "$ROUND" --argjson bd "$bd" \
+            'if .id == $id then .status = "open" | .round = $r | .source = $src
+               | .why = ($bd.why // .why)
+               | .suggested_method = ($bd.suggested_method // .suggested_method)
                | .note = "reopened: re-raised in round " + ($r | tostring) else . end' \
             "$DEMANDS" > "$DEMANDS.tmp"
           mv "$DEMANDS.tmp" "$DEMANDS"
@@ -332,8 +347,9 @@ case "$CMD" in
     # stage that ran and found nothing adds no ledger entry, so without a
     # receipt it is indistinguishable from a stage that never ran — and
     # `converged` would call the whole pipeline clean on an empty ledger.
-    jq -nc --arg src "$SOURCE" --argjson r "$ROUND" --argjson n "$new" \
-      '{round: $r, source: $src, new: $n}' >> "$STAGES"
+    VERD="$(jq -r '.verdict' "$FINDINGS")"
+    jq -nc --arg src "$SOURCE" --arg v "$VERD" --argjson r "$ROUND" --argjson n "$new" \
+      '{round: $r, source: $src, verdict: $v, new: $n}' >> "$STAGES"
     open="$(jq -sc 'map(select(.status == "open")) | length' "$LEDGER")"
     echo "new=$new dup=$dup reopened=$reopened escalated=$escalated open=$open"
     ;;
@@ -425,6 +441,7 @@ case "$CMD" in
     # "met" asserts a measurement exists; without the numbers attached the
     # ledger records evidence nobody can check, and the final report inherits
     # that claim. "dropped" needs its reason for the same purpose.
+    case "$NOTE" in *[![:space:]]*) ;; *) NOTE="" ;; esac   # whitespace is not evidence
     if [ "$ST" != open ] && [ -z "$NOTE" ]; then
       die "demand: --note is required for '$ST' — record the numbers (met) or why not (dropped); the note IS the evidence"
     fi
@@ -451,6 +468,7 @@ case "$CMD" in
     case "$ST" in fixed|rejected|wontfix|contested|open) ;; *) die "resolve: bad status $ST" ;; esac
     grep -qF -- "\"fp\":\"$FP\"" "$LEDGER" || die "resolve: fp not found: $FP"
     ROUND="$(cat "$ROUND_FILE")"
+    PREV_ST="$(jq -r --arg fp "$FP" 'select(.fp == $fp) | .status' "$LEDGER")"
     # news_round: rejecting a finding (or parking it as wontfix) produces no
     # new external signal, so it must not buy the run another round — clear it.
     # A FIX keeps its news (the new code needs re-review); a manual reopen
@@ -461,7 +479,11 @@ case "$CMD" in
       # news_round at the round the finding was raised means a round-1 finding
       # fixed in round 3 carries stale news, converges instantly, and the new
       # code is never reviewed by anyone.
-      fixed|open) NEWS="$ROUND" ;;
+      # Only a TRANSITION into fixed is new signal. Replaying `resolve … fixed`
+      # (an orchestration retry, a resumed session) must not manufacture news
+      # that blocks convergence forever and falsely exhausts the round cap.
+      fixed) if [ "$PREV_ST" = fixed ]; then NEWS=""; else NEWS="$ROUND"; fi ;;
+      open) NEWS="$ROUND" ;;
       *) NEWS="" ;;
     esac
     jq -c --arg fp "$FP" --arg st "$ST" --arg note "$NOTE" --arg news "$NEWS" \
@@ -514,14 +536,21 @@ case "$CMD" in
       for st in "${want[@]}"; do
         [ -n "$st" ] || continue
         jq -e --arg s "$st" --argjson r "$ROUND" \
-          'select(.source == $s and .round == $r)' "$STAGES" >/dev/null 2>&1 \
+          'select(.source == $s and .round == $r and .verdict != "block")' "$STAGES" >/dev/null 2>&1 \
           || missing="$missing $st"
       done
       missing="${missing# }"
     fi
     echo "round=$ROUND open_blocking(>=$GATE)=$open_blocking new(>=$GATE)_in_last_${CLEAN}_rounds=$new_recent open_demands=$open_demands"
     if [ -n "$missing" ]; then
-      echo "NOT CONVERGED — no stage evidence for this round: $missing" >&2
+      echo "no acceptable stage evidence for this round: $missing" >&2
+      # Fall through to the max-rounds check below rather than exiting here —
+      # otherwise a run that never produces receipts returns "next round"
+      # forever and sails past its own hard cap.
+      if [ "$ROUND" -ge "$MAX" ]; then
+        echo "MAX-ROUNDS EXHAUSTED (report remaining open findings honestly)"
+        exit 3
+      fi
       echo "NOT CONVERGED"
       exit 1
     fi

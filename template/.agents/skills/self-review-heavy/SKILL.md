@@ -99,7 +99,7 @@ quality falls off a cliff on oversized diffs.
 with: the playbook path, bundle dir, repo path, the profile's rule-doc
 paths (rules can define repo-specific blockers — secret formats, size
 limits — the gate must apply), the profile's checks **verbatim, with every
-`{placeholder}` left literal** (the gate fills selector placeholders through
+`@@placeholder@@` left literal** (the gate fills selector placeholders through
 `checks.sh --subst`, which quotes them — render them yourself and you paste
 diff-derived filenames straight into `bash -c`; see `stage-1-gate.md` step 2),
 and an output path `<bundle>/findings-gate.json`. In Claude Code the runner is
@@ -206,8 +206,14 @@ convergence-resetting, so record them and move on.
 
 ```
 <skill>/scripts/ledger.sh converged <bundle>/ledger \
-  --clean-rounds <K> --max-rounds <N> --gate <severity_gate>
+  --clean-rounds <K> --max-rounds <N> --gate <severity_gate> \
+  --require <the profile's enabled stage ids, comma-separated>
 ```
+
+`--require` is not optional bookkeeping: without it, one stale receipt from any
+round satisfies the "did anything run?" guard. Pass the stages this run actually
+enabled (minus anything `skip=`ped), so each must show a receipt for the current
+round with a verdict other than `block`.
 
 - exit 0 `CONVERGED` — no open/contested findings at or above the gate, no
   new gate-level findings for K rounds, **and no open benchmark demands** →

@@ -429,7 +429,7 @@ pass "checks.sh refuses self-truncation and vacuous green runs"
 # `bash -c`, and an unquoted `tests/x; touch <marker> #.sh` would run.
 marker="$WORK/PWNED"
 printf 'tests/x; touch %s #.sh\ntests/plain_test.sh\n' "$marker" > "$WORK/sel.txt"
-printf 'related%secho SEL: {tests}\n' "$TAB" > "$WORK/c-subst.tsv"
+printf 'related%secho SEL: @@tests@@\n' "$TAB" > "$WORK/c-subst.tsv"
 "$SRH/checks.sh" --file "$WORK/c-subst.tsv" --out "$WORK/cb6" -C "$WORK" \
   --subst tests="$WORK/sel.txt" >/dev/null
 [ ! -e "$marker" ] || fail "--subst let a metacharacter path execute"
@@ -439,10 +439,10 @@ grep -q 'touch' "$WORK/cb6/checks/related.log" \
 pass "checks.sh --subst quotes selectors instead of executing them"
 
 # A {placeholder} nobody filled means that check verified nothing. The command
-# is NOT run — `true {nobodyfilledthis}` would exit 0 and record a pass that
+# is NOT run — `true @@nobodyfilledthis@@` would exit 0 and record a pass that
 # answers no question at all — and checks.tsv says fail, because that file is
 # the evidence the gate actually reads.
-printf 'lint%strue {nobodyfilledthis}\n' "$TAB" > "$WORK/c-unfilled.tsv"
+printf 'lint%strue @@nobodyfilledthis@@\n' "$TAB" > "$WORK/c-unfilled.tsv"
 rc=0
 "$SRH/checks.sh" --file "$WORK/c-unfilled.tsv" --out "$WORK/cb7" -C "$WORK" \
   >"$WORK/unfilled.out" 2>&1 || rc=$?
@@ -521,16 +521,20 @@ rc=0
 grep -q "masked${TAB}fail" "$WORK/cb8/checks.tsv" || fail "a failing check behind a pipe recorded pass"
 pass "checks.sh sees a failing command on the left of a pipe"
 
-# Braces that belong to awk/jq/shell must not read as unfilled placeholders:
-# the gate is told to turn that warning into a not-verified finding, so false
-# alarms discard good evidence and train it to ignore real ones.
-# shellcheck disable=SC2016  # ${v} must stay literal — it is the input under test
-printf 'awkfmt%secho hi | awk '"'"'{print}'"'"'\nshvar%sv=ok; echo "${v}"\n' "$TAB" "$TAB" > "$WORK/c-braces.tsv"
+# Braces that belong to awk/jq/shell must not read as placeholders. Single
+# braces are ambiguous — `awk 'BEGIN {print}'` and `jq '. | {name}'` are
+# ordinary commands — so placeholders are {{doubled}}. Getting this wrong does
+# not just warn: an unresolved placeholder means the check is NOT RUN and
+# recorded fail, which blocks a required gate check on a legitimate command.
+# shellcheck disable=SC2016  # ${v} and the awk/jq braces are the input under test
+printf 'awkfmt%secho hi | awk '"'"'BEGIN {print}'"'"'\njqfmt%secho '"'"'{}'"'"' | jq '"'"'. | {name}'"'"'\nshvar%sv=ok; echo "${v}"\n' \
+  "$TAB" "$TAB" "$TAB" > "$WORK/c-braces.tsv"
+rc=0
 "$SRH/checks.sh" --file "$WORK/c-braces.tsv" --out "$WORK/cb9" -C "$WORK" \
-  2>"$WORK/braces.err" >/dev/null
-grep -q 'unfilled placeholder' "$WORK/braces.err" \
-  && fail "checks.sh false-warned on awk/shell braces"
-pass "checks.sh does not mistake awk/shell braces for placeholders"
+  >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "checks.sh blocked a legitimate awk/jq/shell brace (rc=$rc)"
+grep -q "fail" "$WORK/cb9/checks.tsv" && fail "checks.sh recorded a brace-bearing command as fail"
+pass "checks.sh runs commands whose braces belong to awk/jq/shell"
 
 # --- ledger: state that must survive the operator ------------------------
 # The operator is an agent in a multi-round loop; after a compaction it replays
@@ -608,13 +612,17 @@ pass "bundle.sh quotes newline filenames and records worktree dirtiness"
 # checks.tsv is the machine-readable evidence everything downstream keys on, so
 # it must not say pass — stderr prose only helps if a model reads and obeys it.
 : > "$WORK/sel-empty.txt"
-printf 'related%smy-runner {tests}\n' "$TAB" > "$WORK/c-empty.tsv"
+printf 'related%strue @@tests@@\n' "$TAB" > "$WORK/c-empty.tsv"
 rc=0
 "$SRH/checks.sh" --file "$WORK/c-empty.tsv" --out "$WORK/cb10" -C "$WORK" \
   --subst tests="$WORK/sel-empty.txt" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 1 ] || fail "an empty selector list must fail the check (rc=$rc)"
 grep -q "related${TAB}fail" "$WORK/cb10/checks.tsv" \
   || fail "an unverifiable check recorded pass in checks.tsv"
+# `true` would EXIT 0 if it ran, so this only passes because the check was
+# never run — without that, the probe would succeed and hide the regression.
+grep -q 'not run' "$WORK/cb10/checks/related.log" \
+  || fail "the empty-selector check was executed instead of being refused"
 pass "checks.sh records an unverifiable check as fail, not pass"
 
 # --halt stops at the first failure, so later rows must not appear.
@@ -665,5 +673,58 @@ EOF
   || fail "a dispute with an out-of-enum position was recorded"
 grep -q 'bad position' "$WORK/badpos.err" || fail "no warning for an out-of-enum dispute position"
 pass "ledger rejects a dispute whose position is not confirm/refute"
+
+# Stage receipts: `add` writes one per stage per round, and --require demands a
+# current-round receipt with a non-blocking verdict. Without coverage, deleting
+# the round match or the whole branch leaves both suites green.
+"$SRH/ledger.sh" init "$WORK/led-req" >/dev/null
+cat > "$WORK/clean.json" <<'EOF'
+{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}
+EOF
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-req" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "an empty ledger with no stage receipt must not converge (rc=$rc)"
+"$SRH/ledger.sh" add "$WORK/led-req" --source gate "$WORK/clean.json" >/dev/null
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-req" --require gate >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "a same-round approving receipt must satisfy --require (rc=$rc)"
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-req" --require gate,cross --max-rounds 9 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "a stage that never ran must block --require (rc=$rc)"
+"$SRH/ledger.sh" bump "$WORK/led-req" >/dev/null
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-req" --require gate --max-rounds 9 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "a receipt from a PRIOR round must not satisfy --require (rc=$rc)"
+# A stage that ran but returned "block" is evidence of a problem, not of clearance.
+cat > "$WORK/blocked.json" <<'EOF'
+{"verdict":"block","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}
+EOF
+"$SRH/ledger.sh" add "$WORK/led-req" --source gate "$WORK/blocked.json" >/dev/null
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-req" --require gate --max-rounds 9 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "a blocking verdict must not satisfy --require (rc=$rc)"
+# …and the cap must still terminate a run that can never satisfy --require.
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-req" --require gate --max-rounds 2 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 3 ] || fail "missing stage evidence must still hit MAX-ROUNDS EXHAUSTED (rc=$rc)"
+pass "stage receipts gate convergence per round, per verdict, and still honour the cap"
+
+# Adopting a re-report's evidence must drop verdicts cast on the OLD evidence,
+# on every adoption path — otherwise `unverified` never re-lists the claim and
+# a stale refute reads as a live verdict on evidence its author never saw.
+"$SRH/ledger.sh" init "$WORK/led-stale" >/dev/null
+cat > "$WORK/s1.json" <<'EOF'
+{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[{"severity":"major","file":"c.c","title":"Race in cache","body":"weak"}]}
+EOF
+"$SRH/ledger.sh" add "$WORK/led-stale" --source deep "$WORK/s1.json" >/dev/null
+sfp="$(jq -r .fp "$WORK/led-stale/ledger.jsonl")"
+cat > "$WORK/s2.json" <<EOF
+{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[{"fp":"$sfp","position":"refute","reason":"guarded"}]}
+EOF
+"$SRH/ledger.sh" add "$WORK/led-stale" --source cross "$WORK/s2.json" >/dev/null 2>&1
+"$SRH/ledger.sh" bump "$WORK/led-stale" >/dev/null
+cat > "$WORK/s3.json" <<'EOF'
+{"verdict":"block","summary":null,"benchmark_demands":[],"disputes":[],"findings":[{"severity":"blocker","file":"c.c","title":"Race in cache","body":"NEW crash repro"}]}
+EOF
+"$SRH/ledger.sh" add "$WORK/led-stale" --source deep "$WORK/s3.json" >/dev/null
+[ "$("$SRH/ledger.sh" list "$WORK/led-stale" | jq -r '.disputes | length')" = "0" ] \
+  || fail "escalation kept a dispute cast on the superseded evidence"
+"$SRH/ledger.sh" unverified "$WORK/led-stale" --source cross | grep -q 'Race in cache' \
+  || fail "an escalated claim must go back on the cross stage's to-verify list"
+pass "adopting new evidence clears verdicts cast on the old evidence"
 
 echo "smoke-srh: all good"
