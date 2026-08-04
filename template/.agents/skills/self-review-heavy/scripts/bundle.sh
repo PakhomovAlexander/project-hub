@@ -25,6 +25,7 @@ PATHS=""
 # NL="$(printf '\n')" would yield the empty string and match everything.
 NL='
 '
+TABCH="$(printf '\t')"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -113,16 +114,22 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
     # a phantom path enters the token pipeline, and the scan sees nothing
     # wrong. Exactly the plant-a-file case --uncommitted review invites.
     case "$uf" in
-      *'"'* | *"$NL"* | *\\*)
+      *'"'* | *"$NL"* | *"$TABCH"* | *\\*)
         printf 'A\t%s\n' "$(printf '%s' "$uf" | awk '
-          { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); l[NR] = $0 }
+          { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); l[NR] = $0 }
           END { s = ""; for (i = 1; i <= NR; i++) s = s (i > 1 ? "\\n" : "") l[i]
                 printf "\"%s\"", s }')" >> "$OUT/files.txt"
         ;;
       *) printf 'A\t%s\n' "$uf" >> "$OUT/files.txt" ;;
     esac
-    git diff --no-index -- /dev/null "$uf" >> "$OUT/diff.patch" || true
-    git diff --no-index --numstat -- /dev/null "$uf" >> "$OUT/.numstat" || true
+    # `|| true` hid real failures (unreadable file, permission denied) behind
+    # the expected exit 1 that just means "these files differ" — producing a
+    # bundle that looks complete while a new file's contents are missing from
+    # the diff reviewers read.
+    drc=0; git diff --no-index -- /dev/null "$uf" >> "$OUT/diff.patch" || drc=$?
+    [ "$drc" -le 1 ] || { echo "bundle.sh: cannot diff untracked file: $uf (git exit $drc)" >&2; exit 2; }
+    drc=0; git diff --no-index --numstat -- /dev/null "$uf" >> "$OUT/.numstat" || drc=$?
+    [ "$drc" -le 1 ] || { echo "bundle.sh: cannot numstat untracked file: $uf (git exit $drc)" >&2; exit 2; }
   done < "$OUT/.untracked0"
   rm -f "$OUT/.untracked0"
 else

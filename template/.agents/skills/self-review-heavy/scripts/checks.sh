@@ -35,6 +35,7 @@ HALT=0
 # bash 3.2 like every other script the template ships.
 SUBST_NAMES=()
 SUBST_VALS=()
+SUBST_EMPTY=""
 
 # POSIX single-quote wrapping: every embedded ' becomes '\''. Whatever the
 # value contains — semicolons, backticks, $(), newlines — `bash -c` sees one
@@ -63,7 +64,10 @@ while [ $# -gt 0 ]; do
       # runner given no selectors may run everything, or nothing, and either
       # way the check did not test the change. Say so; the gate's honesty rule
       # turns "selector resolves to nothing" into a not-verified finding.
-      [ -n "$sval" ] || echo "checks.sh: --subst $sname: $sfile has no values — {$sname} expands to nothing" >&2
+      if [ -z "$sval" ]; then
+        echo "checks.sh: --subst $sname: $sfile has no values — any check using {$sname} cannot verify anything and will be recorded fail" >&2
+        SUBST_EMPTY="$SUBST_EMPTY $sname"
+      fi
       SUBST_NAMES+=("$sname"); SUBST_VALS+=("$sval")
       shift 2
       ;;
@@ -95,6 +99,14 @@ while IFS="$TAB" read -r name cmd || [ -n "$name" ]; do
     rc=1
     continue
   fi
+  # A selector list that resolved to nothing means this check cannot test the
+  # change — running it anyway (a test runner with no selectors runs
+  # everything, or nothing) records a pass that answers a different question.
+  unverifiable=""
+  for en in $SUBST_EMPTY; do
+    case "$cmd" in *"{$en}"*) unverifiable="$unverifiable {$en}" ;; esac
+  done
+
   i=0
   while [ "$i" -lt "${#SUBST_NAMES[@]}" ]; do
     sn="${SUBST_NAMES[$i]}"; sv="${SUBST_VALS[$i]}"
@@ -110,7 +122,21 @@ while IFS="$TAB" read -r name cmd || [ -n "$name" ]; do
   left="$(printf '%s' "$cmd" \
     | grep -oE "(^|[^\$'\"])\{[a-z_][a-z0-9_]*\}" \
     | sed 's/^[^{]*//' | sort -u | tr '\n' ' ' || true)"
-  [ -z "$left" ] || echo "checks.sh: '$name' has unfilled placeholder(s): ${left% } — pass --subst; this check verifies nothing as written" >&2
+  [ -z "$left" ] || unverifiable="$unverifiable ${left% }"
+
+  # Record it as a FAILURE rather than running it. stderr prose only becomes a
+  # not-verified finding if the reading model notices and obeys it; checks.tsv
+  # is the machine-readable evidence everything downstream keys on, and it must
+  # not say pass for a check that never tested the change.
+  if [ -n "$unverifiable" ]; then
+    total=$((total + 1)); rc=1
+    log="$OUT/checks/$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '_').log"
+    echo "not run: unresolved placeholder(s):${unverifiable} — nothing was verified" > "$log"
+    printf '%s\t%s\t%s\t%s\n' "$name" "fail" "0" "$log" >> "$OUT/checks.tsv"
+    printf '  ✗ %s (not run — unresolved:%s)\n' "$name" "$unverifiable"
+    [ "$HALT" -eq 1 ] && break
+    continue
+  fi
 
   total=$((total + 1))
   # printf, not echo: echo's trailing newline is outside the keep-set and

@@ -28,7 +28,7 @@ D="$WORK/ledger"
 "$SRH/ledger.sh" init "$D" >/dev/null
 
 cat > "$WORK/f1.json" <<'EOF'
-{"verdict":"request-changes","findings":[
+{"summary":null,"benchmark_demands":[],"disputes":[],"verdict":"request-changes","findings":[
  {"severity":"major","file":"src/a.cpp","line":1,"title":"Major issue A","body":"x","confidence":0.9},
  {"severity":"minor","file":"src/b.h","title":"Minor issue B","body":"y","confidence":0.8}]}
 EOF
@@ -40,7 +40,7 @@ out="$("$SRH/ledger.sh" add "$D" --source cross "$WORK/f1.json")"
 pass "ledger add dedups by fingerprint"
 
 cat > "$WORK/bad.json" <<'EOF'
-{"findings":[{"severity":"critical","file":"src/a.cpp","title":"Out-of-enum severity","body":"z"}]}
+{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[{"severity":"critical","file":"src/a.cpp","title":"Out-of-enum severity","body":"z"}]}
 EOF
 rc=0; "$SRH/ledger.sh" add "$D" --source deep "$WORK/bad.json" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "malformed severity must be rejected (rc=$rc)"
@@ -50,7 +50,7 @@ pass "ledger add rejects schema-invalid findings"
 # skipped with a warning; the rest of the batch still lands (one bad entry
 # must not sink nine good ones).
 cat > "$WORK/edge.json" <<'EOF'
-{"findings":[
+{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[
  {"severity":"minor","file":"","title":"Change-wide concern","body":"b"},
  {"severity":"minor","file":"x.c","title":"","body":"b"},
  {"severity":"minor","file":"w.c","title":"   ","body":"b"},
@@ -67,7 +67,7 @@ pass "ledger add handles empty file/title per finding, not wholesale"
 # punctuation and non-ASCII are significant — "x < 0" vs "x > 0" and two
 # different Cyrillic titles must NOT collapse into one entry.
 cat > "$WORK/fpx.json" <<'EOF'
-{"findings":[
+{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[
  {"severity":"minor","file":"a.c","title":"Reject x < 0","body":"b"},
  {"severity":"blocker","file":"a.c","title":"Reject x > 0","body":"b"},
  {"severity":"major","file":"a.c","title":"Ошибка чтения","body":"b"},
@@ -77,7 +77,7 @@ EOF
 out="$("$SRH/ledger.sh" add "$WORK/led-fp" --source deep "$WORK/fpx.json")"
 [ "$out" = "new=4 dup=0 reopened=0 escalated=0 open=4" ] || fail "fingerprint collapsed distinct titles: '$out'"
 cat > "$WORK/fpy.json" <<'EOF'
-{"findings":[{"severity":"minor","file":"a.c","title":"reject   X < 0","body":"b"}]}
+{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[{"severity":"minor","file":"a.c","title":"reject   X < 0","body":"b"}]}
 EOF
 out="$("$SRH/ledger.sh" add "$WORK/led-fp" --source cross "$WORK/fpy.json")"
 [ "$out" = "new=0 dup=1 reopened=0 escalated=0 open=4" ] || fail "case/whitespace variant did not dedup: '$out'"
@@ -114,7 +114,7 @@ pass "re-report reopens, counts as news, and needs a clean round to converge"
 # guarding this let a still-broken build read as zero open blockers.
 "$SRH/ledger.sh" init "$WORK/led-same" >/dev/null
 cat > "$WORK/gate.json" <<'EOF'
-{"findings":[{"severity":"blocker","file":"build","title":"Build fails","body":"linker error"}]}
+{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[{"severity":"blocker","file":"build","title":"Build fails","body":"linker error"}]}
 EOF
 "$SRH/ledger.sh" add "$WORK/led-same" --source gate "$WORK/gate.json" >/dev/null
 gfp="$(jq -r .fp "$WORK/led-same/ledger.jsonl")"
@@ -129,7 +129,7 @@ pass "a same-round gate re-run catches a fix that didn't hold"
 # external signal, so it must not buy itself another round; a round that
 # produced a FIX must, because that new code has not been reviewed yet.
 cat > "$WORK/fp1.json" <<'EOF'
-{"findings":[{"severity":"major","file":"a.c","title":"False alarm","body":"b"}]}
+{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[{"severity":"major","file":"a.c","title":"False alarm","body":"b"}]}
 EOF
 "$SRH/ledger.sh" init "$WORK/led-news" >/dev/null
 "$SRH/ledger.sh" add "$WORK/led-news" --source deep "$WORK/fp1.json" >/dev/null
@@ -149,7 +149,7 @@ pass "rejections clear convergence news; fixes keep it"
 # which are UNVERIFIED, not confirmed.
 "$SRH/ledger.sh" init "$WORK/led-dis" >/dev/null
 cat > "$WORK/deep2.json" <<'EOF'
-{"findings":[
+{"verdict":"request-changes","summary":null,"disputes":[],"findings":[
  {"severity":"major","file":"a.c","title":"Claim one","body":"b"},
  {"severity":"major","file":"b.c","title":"Claim two","body":"b"}],
  "benchmark_demands":[{"claim":"the rewrite is faster","why":"hot path","suggested_method":"interleaved A/B, 7 runs"}]}
@@ -157,7 +157,7 @@ EOF
 "$SRH/ledger.sh" add "$WORK/led-dis" --source deep "$WORK/deep2.json" >/dev/null
 d1="$("$SRH/ledger.sh" list "$WORK/led-dis" | jq -r 'select(.file == "a.c").fp')"
 cat > "$WORK/cross2.json" <<EOF
-{"findings":[],"disputes":[
+{"verdict":"request-changes","summary":null,"benchmark_demands":[],"findings":[],"disputes":[
  {"fp":"$d1","position":"refute","reason":"guarded at a.c:12"},
  {"fp":"nosuchfp0000","position":"confirm","reason":"dangling reference"}]}
 EOF
@@ -187,10 +187,10 @@ pass "ledger commands refuse an uninitialized directory"
 # re-reported as a blocker must block on its NEW severity, not the stale one.
 "$SRH/ledger.sh" init "$WORK/led-esc" >/dev/null
 cat > "$WORK/esc1.json" <<'EOF'
-{"findings":[{"severity":"minor","file":"c.c","title":"Escalating issue","body":"weak"}]}
+{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[{"severity":"minor","file":"c.c","title":"Escalating issue","body":"weak"}]}
 EOF
 cat > "$WORK/esc2.json" <<'EOF'
-{"findings":[{"severity":"blocker","file":"c.c","title":"Escalating issue","body":"crash repro"}]}
+{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[{"severity":"blocker","file":"c.c","title":"Escalating issue","body":"crash repro"}]}
 EOF
 "$SRH/ledger.sh" add "$WORK/led-esc" --source deep "$WORK/esc1.json" >/dev/null
 efp="$(jq -r .fp "$WORK/led-esc/ledger.jsonl")"
@@ -438,14 +438,20 @@ grep -q 'touch' "$WORK/cb6/checks/related.log" \
   || fail "--subst did not pass the hostile path through as literal text"
 pass "checks.sh --subst quotes selectors instead of executing them"
 
-# A {placeholder} nobody filled means that check verified nothing — say so
-# rather than letting it pass or fail on literal text.
+# A {placeholder} nobody filled means that check verified nothing. The command
+# is NOT run — `true {nobodyfilledthis}` would exit 0 and record a pass that
+# answers no question at all — and checks.tsv says fail, because that file is
+# the evidence the gate actually reads.
 printf 'lint%strue {nobodyfilledthis}\n' "$TAB" > "$WORK/c-unfilled.tsv"
+rc=0
 "$SRH/checks.sh" --file "$WORK/c-unfilled.tsv" --out "$WORK/cb7" -C "$WORK" \
-  2>"$WORK/unfilled.err" >/dev/null
-grep -q 'unfilled placeholder' "$WORK/unfilled.err" \
-  || fail "checks.sh did not report an unfilled placeholder"
-pass "checks.sh reports unfilled placeholders"
+  >"$WORK/unfilled.out" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "an unfilled placeholder must fail the run (rc=$rc)"
+grep -q "lint${TAB}fail" "$WORK/cb7/checks.tsv" \
+  || fail "an unfilled placeholder recorded pass in checks.tsv"
+grep -q 'not run' "$WORK/cb7/checks/lint.log" \
+  || fail "the log does not say the check was never run"
+pass "checks.sh refuses to run, and never passes, a check with an unfilled placeholder"
 
 # --- codex-review.sh ------------------------------------------------------
 # Argument validation runs BEFORE the `command -v codex` guard, so all of it is
@@ -531,7 +537,7 @@ pass "checks.sh does not mistake awk/shell braces for placeholders"
 # the runbook from the top. A second init used to wipe the ledger and reset the
 # round, after which converged reported a clean run over unresolved findings.
 "$SRH/ledger.sh" init "$WORK/led-reinit" >/dev/null
-printf '{"findings":[{"severity":"blocker","file":"a.c","title":"Real blocker","body":"b"}]}' > "$WORK/blk.json"
+printf '{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[{"severity":"blocker","file":"a.c","title":"Real blocker","body":"b"}]}' > "$WORK/blk.json"
 "$SRH/ledger.sh" add "$WORK/led-reinit" --source gate "$WORK/blk.json" >/dev/null
 "$SRH/ledger.sh" bump "$WORK/led-reinit" >/dev/null
 rc=0; "$SRH/ledger.sh" init "$WORK/led-reinit" >/dev/null 2>&1 || rc=$?
@@ -545,7 +551,7 @@ pass "ledger init refuses to wipe a live ledger"
 # claims is the blind hand-off to stages 2-3: a second opinion that reads the
 # first one's reasoning is an echo, not verification.
 "$SRH/ledger.sh" init "$WORK/led-claims" >/dev/null
-printf '{"findings":[{"severity":"major","file":"a.c","line":7,"title":"Claim A","body":"STAGE2 REASONING","fix":"bound the copy"}]}' > "$WORK/cl.json"
+printf '{"verdict":"request-changes","summary":null,"benchmark_demands":[],"disputes":[],"findings":[{"severity":"major","file":"a.c","line":7,"title":"Claim A","body":"STAGE2 REASONING","fix":"bound the copy"}]}' > "$WORK/cl.json"
 "$SRH/ledger.sh" add "$WORK/led-claims" --source deep "$WORK/cl.json" >/dev/null
 "$SRH/ledger.sh" claims "$WORK/led-claims" | grep -q 'STAGE2 REASONING' \
   && fail "claims leaked the finding body into the reviewer hand-off"
@@ -557,7 +563,7 @@ pass "claims hands over locations without reasoning; add keeps the fix field"
 # A demand is an unmeasured claim. Converging over one means the report asserts
 # evidence the run never gathered.
 "$SRH/ledger.sh" init "$WORK/led-dem" >/dev/null
-printf '{"findings":[],"benchmark_demands":[{"claim":"hot loop faster","why":"w","suggested_method":"A/B"}]}' > "$WORK/dm.json"
+printf '{"verdict":"request-changes","summary":null,"disputes":[],"findings":[],"benchmark_demands":[{"claim":"hot loop faster","why":"w","suggested_method":"A/B"}]}' > "$WORK/dm.json"
 "$SRH/ledger.sh" add "$WORK/led-dem" --source deep "$WORK/dm.json" >/dev/null 2>&1
 rc=0; "$SRH/ledger.sh" converged "$WORK/led-dem" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 1 ] || fail "an open benchmark demand must block convergence (rc=$rc)"
@@ -571,7 +577,7 @@ pass "open benchmark demands block convergence; resolving one releases it"
 # disputes its own claims, so those are noise that scales with productivity.
 "$SRH/ledger.sh" init "$WORK/led-unv" >/dev/null
 "$SRH/ledger.sh" add "$WORK/led-unv" --source deep "$WORK/cl.json" >/dev/null
-printf '{"findings":[{"severity":"major","file":"b.c","title":"Cross own finding","body":"x"}],"disputes":[]}' > "$WORK/cx.json"
+printf '{"verdict":"request-changes","summary":null,"benchmark_demands":[],"findings":[{"severity":"major","file":"b.c","title":"Cross own finding","body":"x"}],"disputes":[]}' > "$WORK/cx.json"
 "$SRH/ledger.sh" add "$WORK/led-unv" --source cross "$WORK/cx.json" >/dev/null 2>&1
 "$SRH/ledger.sh" unverified "$WORK/led-unv" --source cross | jq -r .title | grep -q 'Cross own finding' \
   && fail "unverified listed the cross stage's own finding"
@@ -597,5 +603,67 @@ B8="$("$SRH/bundle.sh" -C "$R4" --base main --uncommitted --out "$WORK/bundle8" 
 grep -q 'innocent' "$B8/unsafe_paths.txt" || fail "a newline filename escaped the unsafe-path scan"
 grep -q 'dirty=1' "$B8/meta.env" || fail "meta.env did not record the dirty worktree"
 pass "bundle.sh quotes newline filenames and records worktree dirtiness"
+
+# A selector list that resolved to nothing means the check tested nothing.
+# checks.tsv is the machine-readable evidence everything downstream keys on, so
+# it must not say pass — stderr prose only helps if a model reads and obeys it.
+: > "$WORK/sel-empty.txt"
+printf 'related%smy-runner {tests}\n' "$TAB" > "$WORK/c-empty.tsv"
+rc=0
+"$SRH/checks.sh" --file "$WORK/c-empty.tsv" --out "$WORK/cb10" -C "$WORK" \
+  --subst tests="$WORK/sel-empty.txt" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "an empty selector list must fail the check (rc=$rc)"
+grep -q "related${TAB}fail" "$WORK/cb10/checks.tsv" \
+  || fail "an unverifiable check recorded pass in checks.tsv"
+pass "checks.sh records an unverifiable check as fail, not pass"
+
+# --halt stops at the first failure, so later rows must not appear.
+printf 'first%sfalse\nsecond%strue\n' "$TAB" "$TAB" > "$WORK/c-halt.tsv"
+"$SRH/checks.sh" --file "$WORK/c-halt.tsv" --out "$WORK/cb11" -C "$WORK" --halt >/dev/null 2>&1 || true
+[ "$(wc -l < "$WORK/cb11/checks.tsv" | tr -d ' ')" = "1" ] \
+  || fail "--halt kept running after a failure: $(cat "$WORK/cb11/checks.tsv")"
+pass "checks.sh --halt stops at the first failing check"
+
+# codex's own nonzero exit must propagate — swallowing it would make a crashed
+# cross-model stage read as a silently-empty successful one.
+rc=0
+CODEX_STUB_RC=42 CODEX_STUB_BODY='{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}' \
+  PATH="$WORK/stub:$PATH" "$SRH/codex-review.sh" --prompt-file "$WORK/prompt.md" \
+  --out "$WORK/o3.json" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 42 ] || fail "codex's own exit code must propagate, got $rc"
+pass "codex-review.sh propagates codex's own failure"
+
+# --paths scopes the reviewed diff; a regression that dropped the filter would
+# quietly bundle the whole change and nobody would notice.
+R5="$WORK/repo5"
+git init -q -b main "$R5"
+(
+  cd "$R5"
+  git config user.email srh@test && git config user.name srh
+  mkdir -p src docs && echo a > src/a.c && echo d > docs/d.md
+  git add -A && git commit -qm base
+  git switch -qc scoped
+  echo b >> src/a.c && echo e >> docs/d.md && git commit -qam change
+)
+B9="$("$SRH/bundle.sh" -C "$R5" --base main --paths 'src/*' --out "$WORK/bundle9" 2>/dev/null | tail -1)"
+grep -q 'src/a.c' "$B9/files.txt" || fail "--paths dropped a path it should have kept"
+grep -q 'docs/d.md' "$B9/files.txt" && fail "--paths did not exclude an unmatched path"
+pass "bundle.sh --paths scopes the reviewed diff"
+
+# A dispute whose position is neither confirm nor refute must be rejected:
+# disputes are not schema-validated on ingest, so this guard is the only thing
+# keeping a garbled cross-model reply out of a finding's recorded verdicts.
+"$SRH/ledger.sh" init "$WORK/led-badpos" >/dev/null
+"$SRH/ledger.sh" add "$WORK/led-badpos" --source deep "$WORK/cl.json" >/dev/null
+bfp="$(jq -r .fp "$WORK/led-badpos/ledger.jsonl")"
+cat > "$WORK/badpos.json" <<EOF
+{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[
+ {"fp":"$bfp","position":"maybe","reason":"garbled"}]}
+EOF
+"$SRH/ledger.sh" add "$WORK/led-badpos" --source cross "$WORK/badpos.json" 2>"$WORK/badpos.err" >/dev/null
+[ "$("$SRH/ledger.sh" list "$WORK/led-badpos" | jq -r '.disputes | length')" = "0" ] \
+  || fail "a dispute with an out-of-enum position was recorded"
+grep -q 'bad position' "$WORK/badpos.err" || fail "no warning for an out-of-enum dispute position"
+pass "ledger rejects a dispute whose position is not confirm/refute"
 
 echo "smoke-srh: all good"

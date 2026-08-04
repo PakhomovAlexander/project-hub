@@ -44,5 +44,29 @@ grep -q 'links into repos/'       "$WORK/bad.out" || { echo "FAIL: repos/ link n
 grep -q 'NOT EXECUTABLE'          "$WORK/bad.out" || { echo "FAIL: exec bit not flagged" >&2; exit 1; }
 grep -q 'MISSING: .hub-meta.yml'  "$WORK/bad.out" || { echo "FAIL: missing provenance not flagged" >&2; exit 1; }
 
+# --- 4. each defect must fail the run ON ITS OWN --------------------------------------
+# The combined hub above proves each defect is REPORTED, but its single "exits
+# nonzero" assertion is over-determined: any one of the five satisfies it. So a
+# check could keep printing its message while losing its `fail=1` wire and both
+# this suite and smoke-update would stay green — while verify.sh greenlit a real
+# hub whose only defect was, say, a broken link. Plant them one at a time.
+echo "== verify each defect in isolation (must fail on its own) =="
+ONE="$WORK/one-hub"
+fresh() { rm -rf "$ONE"; cp -a "$HUB" "$ONE"; }   # a clean hub, one defect at a time
+must_fail() {
+  if bash "$ONE/scripts/verify.sh" "$ONE" > "$WORK/one.out" 2>&1; then
+    echo "FAIL: verify.sh passed a hub whose only defect was: $1" >&2
+    cat "$WORK/one.out" >&2
+    exit 1
+  fi
+  echo "  ✓ $1 fails on its own"
+}
+fresh; printf '\n{{LEFTOVER}}\n' >> "$ONE/README.md"                 ; must_fail "a leftover token"
+fresh; printf '\n[missing](docs/nope.md)\n' >> "$ONE/README.md"      ; must_fail "a broken link"
+fresh; printf '\n[r](../repos/acme/README.md)\n' >> "$ONE/docs/plan.md"; must_fail "a link into repos/"
+fresh; chmod -x "$ONE/scripts/verify.sh"                             ; must_fail "a non-exec script"
+fresh; find "$ONE/.agents/skills" -name '*.sh' -exec chmod -x {} +   ; must_fail "a non-exec skill script"
+fresh; rm "$ONE/.hub-meta.yml"                                       ; must_fail "missing provenance"
+
 echo
-echo "OK — scaffold verifies clean, and the verifier catches planted defects."
+echo "OK — scaffold verifies clean, and every planted defect fails on its own."
