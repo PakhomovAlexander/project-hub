@@ -20,9 +20,16 @@ rules:
 
 # Check cmds run with cwd = the target repo (the gate passes -C <repo> to
 # checks.sh); this ssh example carries its own cd because it runs remotely.
+#
+# KEEP THE PIPE OUTSIDE THE REMOTE QUOTES. checks.sh runs each cmd with
+# pipefail, so `ssh host '<build>' | tail -30` reports the build's status.
+# Move the tail inside — `ssh host '<build> | tail -30'` — and ssh returns the
+# REMOTE pipeline's status, which is tail's: a failing build records pass, and
+# the gate's whole reason to exist is gone. Same trap for any wrapper that
+# runs your command elsewhere (docker, nix, make -C).
 checks:
   - name: build
-    cmd: ssh <build-host> 'cd <checkout> && <build command> 2>&1 | tail -30'
+    cmd: ssh <build-host> 'cd <checkout> && <build command>' 2>&1 | tail -30
     required: true
   # Leave {tests} literal. The gate collects selectors (bundle's
   # tests_changed.txt, plausible tests_candidates.txt entries, tests the
@@ -30,7 +37,7 @@ checks:
   # shell-quotes each one. Never render selectors into this cmd by hand:
   # they come from the diff, and the diff is not always yours.
   - name: tests-related
-    cmd: ssh <build-host> 'cd <checkout> && <test runner> {tests} 2>&1 | tail -40'
+    cmd: ssh <build-host> 'cd <checkout> && <test runner> {tests}' 2>&1 | tail -40
     required: true
 
 benchmarks:

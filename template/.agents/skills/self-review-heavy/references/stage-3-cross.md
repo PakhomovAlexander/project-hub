@@ -39,8 +39,10 @@ EVIDENCE SO FAR
 - Benchmarks: {benchmark results so far, or "none yet"}
 
 PRIOR FINDINGS (claims to confirm or refute independently, from source)
-{fp}  {severity}  {file}:{line}  {title}
-{…one line per open ledger entry…}
+{paste `scripts/ledger.sh claims <bundle>/ledger` verbatim — it emits exactly
+fp / severity / file:line / title per open or contested entry. Do NOT build
+this section from `ledger.sh list`: that carries the body, and a reviewer who
+reads stage 2's reasoning confirms it instead of verifying it.}
 
 TASKS
 1. Full independent review of the change under RULES: architecture,

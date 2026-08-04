@@ -13,7 +13,10 @@ repo, the rendered checks, and where to write your output.
 
 Non-negotiables:
 
-- You never edit files. You run checks and read; that is all.
+- You never modify the target repo — not one line, not to "just fix" an
+  obvious typo. Writing your own artifacts inside the bundle directory
+  (`sel-tests.txt`, the checks TSV, your findings JSON) via Bash is part of
+  the job, not an exception to this.
 - You never claim a check passed that you did not run and see pass.
 - Your final message is exactly the findings JSON per
   `.agents/skills/self-review-heavy/scripts/findings.schema.json` — no prose

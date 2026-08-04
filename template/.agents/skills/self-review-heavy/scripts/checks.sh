@@ -103,8 +103,13 @@ while IFS="$TAB" read -r name cmd || [ -n "$name" ]; do
   done
   # An unfilled {placeholder} means the check ran against literal text and
   # proves nothing — say so rather than letting it pass or fail on its own.
-  # The pattern is deliberately narrow so shell/awk/jq braces don't trip it.
-  left="$(printf '%s' "$cmd" | grep -oE '\{[a-z_][a-z0-9_]*\}' | sort -u | tr '\n' ' ' || true)"
+  # Placeholders are written bare, so a brace preceded by $ or a quote is
+  # somebody else's syntax: ${var}, awk '{print}', jq '{a:1}'. Matching those
+  # would train the gate to ignore the warning that makes it file a
+  # not-verified finding.
+  left="$(printf '%s' "$cmd" \
+    | grep -oE "(^|[^\$'\"])\{[a-z_][a-z0-9_]*\}" \
+    | sed 's/^[^{]*//' | sort -u | tr '\n' ' ' || true)"
   [ -z "$left" ] || echo "checks.sh: '$name' has unfilled placeholder(s): ${left% } — pass --subst; this check verifies nothing as written" >&2
 
   total=$((total + 1))
@@ -112,7 +117,14 @@ while IFS="$TAB" read -r name cmd || [ -n "$name" ]; do
   # became a trailing '_' on every log name.
   log="$OUT/checks/$(printf '%s' "$name" | tr -cs 'A-Za-z0-9._-' '_').log"
   start="$(date +%s)"
-  if (cd "$DIR" && bash -c "$cmd") > "$log" 2>&1; then
+  # pipefail in the CHILD shell. Without it a pipeline's status is its last
+  # command's, so the `<build or test> 2>&1 | tail -N` idiom this skill's own
+  # example profile teaches records `pass` no matter what the left side exits
+  # — a red test suite converges green. A check that legitimately ends in an
+  # early-exit consumer (`| head`, `| grep -q`) will now fail loudly on
+  # SIGPIPE; that is the safe direction for a gate, and `|| true` opts out
+  # per check.
+  if (cd "$DIR" && bash -c "set -o pipefail; $cmd") > "$log" 2>&1; then
     st="pass"; passed=$((passed + 1))
   else
     st="fail"; rc=1

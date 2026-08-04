@@ -21,6 +21,10 @@ BASE=""
 OUT=""
 UNCOMMITTED=0
 PATHS=""
+# A literal newline. Command substitution strips trailing newlines, so
+# NL="$(printf '\n')" would yield the empty string and match everything.
+NL='
+'
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -101,7 +105,22 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
   fi
   tr '\0' '\n' < "$OUT/.untracked0" > "$OUT/untracked.txt"
   while IFS= read -r -d '' uf; do
-    printf 'A\t%s\n' "$uf" >> "$OUT/files.txt"
+    # git C-quotes any path holding a newline or a quote, and the unsafe-path
+    # scan below leans on that: a leading " means "this row is not a usable
+    # path". These rows come from -z output instead (raw, so UTF-8 names stay
+    # openable), so quote those two cases ourselves — otherwise a file named
+    # "innocent.c<LF>rm -rf tmp" splits into two rows, files.txt is corrupt,
+    # a phantom path enters the token pipeline, and the scan sees nothing
+    # wrong. Exactly the plant-a-file case --uncommitted review invites.
+    case "$uf" in
+      *'"'* | *"$NL"* | *\\*)
+        printf 'A\t%s\n' "$(printf '%s' "$uf" | awk '
+          { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); l[NR] = $0 }
+          END { s = ""; for (i = 1; i <= NR; i++) s = s (i > 1 ? "\\n" : "") l[i]
+                printf "\"%s\"", s }')" >> "$OUT/files.txt"
+        ;;
+      *) printf 'A\t%s\n' "$uf" >> "$OUT/files.txt" ;;
+    esac
     git diff --no-index -- /dev/null "$uf" >> "$OUT/diff.patch" || true
     git diff --no-index --numstat -- /dev/null "$uf" >> "$OUT/.numstat" || true
   done < "$OUT/.untracked0"
@@ -168,6 +187,10 @@ rm -f "$OUT/.paths" "$OUT/.tokens"
   echo "base=$BASE"
   echo "merge_base=$MERGE_BASE"
   echo "uncommitted=$UNCOMMITTED"
+  # The gate builds and tests the WORKING TREE. If it is dirty on a committed
+  # run, that evidence describes a different state than diff.patch — record it
+  # so the gate can say so instead of the orchestrator having to remember.
+  echo "dirty=$(if [ -n "$(git status --porcelain 2>/dev/null)" ]; then echo 1; else echo 0; fi)"
   echo "created=$TS"
   echo "files_changed=$(wc -l < "$OUT/files.txt" | tr -d ' ')"
   echo "diff_lines=$(wc -l < "$OUT/diff.patch" | tr -d ' ')"

@@ -31,7 +31,16 @@ rules: []
 checks: []
 
 benchmarks:
-  policy: on-demand       # never | on-demand (a reviewer demands proof) | always
+  # never     — incoming demands are dropped immediately (`ledger.sh demand
+  #             <id> dropped --note "policy: never"`), and a perf finding with
+  #             no numbers is triaged as unmeasured rather than blocking.
+  # on-demand — a reviewer files the demand; you run it and mark it met.
+  # always    — you file a standing demand from `recipe` in round 1 and must
+  #             resolve it met before the run can converge, whether or not any
+  #             reviewer asked. For repos whose perf evidence must exist every
+  #             time.
+  # Open demands block convergence under every policy — see ledger.sh.
+  policy: on-demand
   runner: ""              # where/how benchmarks run — free text the orchestrator follows
   recipe: ""              # pointer to the canonical recipe (doc, PR, script)
 

@@ -504,4 +504,98 @@ CODEX_STUB_BODY='{"verdict":"approve","summary":null,"findings":[],"benchmark_de
   || fail "codex-review.sh output is not ledger-ingestible"
 pass "codex-review.sh rejects a non-JSON answer and accepts a schema-shaped one"
 
+# A check whose command is a pipeline must report the PIPELINE's failure, not
+# its last stage's. `<test suite> 2>&1 | tail -3` is the idiom the example
+# profile teaches, and without pipefail in the child shell a red suite records
+# pass — the gate's entire purpose, silently inverted.
+printf 'masked%ssh -c '"'"'exit 7'"'"' 2>&1 | tail -3\n' "$TAB" > "$WORK/c-pipe.tsv"
+rc=0
+"$SRH/checks.sh" --file "$WORK/c-pipe.tsv" --out "$WORK/cb8" -C "$WORK" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "a failing check behind a pipe must fail the run (rc=$rc)"
+grep -q "masked${TAB}fail" "$WORK/cb8/checks.tsv" || fail "a failing check behind a pipe recorded pass"
+pass "checks.sh sees a failing command on the left of a pipe"
+
+# Braces that belong to awk/jq/shell must not read as unfilled placeholders:
+# the gate is told to turn that warning into a not-verified finding, so false
+# alarms discard good evidence and train it to ignore real ones.
+# shellcheck disable=SC2016  # ${v} must stay literal — it is the input under test
+printf 'awkfmt%secho hi | awk '"'"'{print}'"'"'\nshvar%sv=ok; echo "${v}"\n' "$TAB" "$TAB" > "$WORK/c-braces.tsv"
+"$SRH/checks.sh" --file "$WORK/c-braces.tsv" --out "$WORK/cb9" -C "$WORK" \
+  2>"$WORK/braces.err" >/dev/null
+grep -q 'unfilled placeholder' "$WORK/braces.err" \
+  && fail "checks.sh false-warned on awk/shell braces"
+pass "checks.sh does not mistake awk/shell braces for placeholders"
+
+# --- ledger: state that must survive the operator ------------------------
+# The operator is an agent in a multi-round loop; after a compaction it replays
+# the runbook from the top. A second init used to wipe the ledger and reset the
+# round, after which converged reported a clean run over unresolved findings.
+"$SRH/ledger.sh" init "$WORK/led-reinit" >/dev/null
+printf '{"findings":[{"severity":"blocker","file":"a.c","title":"Real blocker","body":"b"}]}' > "$WORK/blk.json"
+"$SRH/ledger.sh" add "$WORK/led-reinit" --source gate "$WORK/blk.json" >/dev/null
+"$SRH/ledger.sh" bump "$WORK/led-reinit" >/dev/null
+rc=0; "$SRH/ledger.sh" init "$WORK/led-reinit" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "re-init over a live ledger must be refused (rc=$rc)"
+[ "$(wc -l < "$WORK/led-reinit/ledger.jsonl" | tr -d ' ')" = "1" ] || fail "re-init erased the ledger"
+[ "$("$SRH/ledger.sh" round "$WORK/led-reinit")" = "2" ] || fail "re-init reset the round"
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-reinit" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "the surviving blocker must still block (rc=$rc)"
+pass "ledger init refuses to wipe a live ledger"
+
+# claims is the blind hand-off to stages 2-3: a second opinion that reads the
+# first one's reasoning is an echo, not verification.
+"$SRH/ledger.sh" init "$WORK/led-claims" >/dev/null
+printf '{"findings":[{"severity":"major","file":"a.c","line":7,"title":"Claim A","body":"STAGE2 REASONING","fix":"bound the copy"}]}' > "$WORK/cl.json"
+"$SRH/ledger.sh" add "$WORK/led-claims" --source deep "$WORK/cl.json" >/dev/null
+"$SRH/ledger.sh" claims "$WORK/led-claims" | grep -q 'STAGE2 REASONING' \
+  && fail "claims leaked the finding body into the reviewer hand-off"
+"$SRH/ledger.sh" claims "$WORK/led-claims" | grep -q 'a.c:7' || fail "claims dropped the location"
+[ "$("$SRH/ledger.sh" list "$WORK/led-claims" | jq -r .fix)" = "bound the copy" ] \
+  || fail "add dropped the schema-required fix field"
+pass "claims hands over locations without reasoning; add keeps the fix field"
+
+# A demand is an unmeasured claim. Converging over one means the report asserts
+# evidence the run never gathered.
+"$SRH/ledger.sh" init "$WORK/led-dem" >/dev/null
+printf '{"findings":[],"benchmark_demands":[{"claim":"hot loop faster","why":"w","suggested_method":"A/B"}]}' > "$WORK/dm.json"
+"$SRH/ledger.sh" add "$WORK/led-dem" --source deep "$WORK/dm.json" >/dev/null 2>&1
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-dem" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "an open benchmark demand must block convergence (rc=$rc)"
+"$SRH/ledger.sh" demand "$WORK/led-dem" \
+  "$("$SRH/ledger.sh" demands "$WORK/led-dem" | jq -r .id)" dropped --note "not measurable here" >/dev/null
+rc=0; "$SRH/ledger.sh" converged "$WORK/led-dem" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "a dropped demand must stop blocking (rc=$rc)"
+pass "open benchmark demands block convergence; resolving one releases it"
+
+# unverified must not list findings the stage raised itself — a reviewer never
+# disputes its own claims, so those are noise that scales with productivity.
+"$SRH/ledger.sh" init "$WORK/led-unv" >/dev/null
+"$SRH/ledger.sh" add "$WORK/led-unv" --source deep "$WORK/cl.json" >/dev/null
+printf '{"findings":[{"severity":"major","file":"b.c","title":"Cross own finding","body":"x"}],"disputes":[]}' > "$WORK/cx.json"
+"$SRH/ledger.sh" add "$WORK/led-unv" --source cross "$WORK/cx.json" >/dev/null 2>&1
+"$SRH/ledger.sh" unverified "$WORK/led-unv" --source cross | jq -r .title | grep -q 'Cross own finding' \
+  && fail "unverified listed the cross stage's own finding"
+"$SRH/ledger.sh" unverified "$WORK/led-unv" --source cross | jq -r .title | grep -q 'Claim A' \
+  || fail "unverified dropped the claim cross genuinely never addressed"
+pass "unverified excludes a stage's own findings"
+
+# An untracked name holding a newline must not split into two files.txt rows
+# and slip past the unsafe-path scan — the plant-a-file case --uncommitted invites.
+R4="$WORK/repo4"
+git init -q -b main "$R4"
+(
+  cd "$R4"
+  git config user.email srh@test && git config user.name srh
+  echo a > f && git add -A && git commit -qm base
+  git switch -qc names2
+  printf 'plain\n' > "$(printf 'innocent.c\nrm -rf tmp')"
+  printf 'ok\n' > normal.c
+)
+B8="$("$SRH/bundle.sh" -C "$R4" --base main --uncommitted --out "$WORK/bundle8" 2>/dev/null | tail -1)"
+[ "$(wc -l < "$B8/files.txt" | tr -d ' ')" = "2" ] \
+  || fail "a newline filename split files.txt into phantom rows: $(cat "$B8/files.txt")"
+grep -q 'innocent' "$B8/unsafe_paths.txt" || fail "a newline filename escaped the unsafe-path scan"
+grep -q 'dirty=1' "$B8/meta.env" || fail "meta.env did not record the dirty worktree"
+pass "bundle.sh quotes newline filenames and records worktree dirtiness"
+
 echo "smoke-srh: all good"

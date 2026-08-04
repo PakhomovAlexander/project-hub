@@ -51,6 +51,19 @@ your findings JSON.
    green you did not see. `checks.sh` warning that a check still holds an
    unfilled `{placeholder}` is the same thing: that check verified nothing.
 
+   **An empty checks list is the same thing too.** The default profile ships
+   `checks: []`, so a repo with no profile has nothing to run — and a gate
+   that executed nothing has verified nothing, however clean the diff looks.
+   Emit a major finding titled `not verified: no checks configured`, naming
+   what a profile should define for this repo. Never let the absence of
+   checks read as passing checks: stage 2 is told the build and tests are
+   green on your word.
+
+   **A dirty working copy is also not a pass** on a committed run. `meta.env`
+   carries `dirty=`; when it is `1` and the run is not `--uncommitted`, your
+   checks built and tested a tree that is not the diff under review. That is
+   a major finding, not a footnote.
+
 ## Output
 
 Exactly the findings JSON per `scripts/findings.schema.json` — no prose around
