@@ -190,6 +190,6 @@ case "${1:-}" in
   ls)   cmd_ls ;;
   rm)   shift; cmd_rm   "$@" ;;
   ""|-h|--help|help)
-    sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}" ;;
   *) die "unknown command '$1' (new | repo | ls | rm)" ;;
 esac

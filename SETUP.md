@@ -169,10 +169,20 @@ Work through the copied skeleton and make it real:
 - **`CLAUDE.md`** — leave it thin: keep the `@AGENTS.md` + `@CONTEXT.md` imports at the
   top, resolve the placeholders, and that's it. The rules live in `AGENTS.md` only, never
   duplicated here. (Single-repo: trim the linked-clones phrase from the guardrails bullet.)
-- **`.agents/skills/`** — the six skills are generic; keep them as-is. Single-repo
+- **`.agents/skills/`** — the seven skills are generic; keep them as-is. Single-repo
   project: delete `onboard-repo/` (but keep `update-hub/` — it's how the hub takes
-  template upgrades later). If the team has other recurring processes, add one skill
-  per process (a directory + `SKILL.md`, `name` matching the directory).
+  template upgrades later). `/self-review-heavy` is the heavy pre-PR review pipeline —
+  it needs `jq` (plus the codex CLI for its cross-model stage); wire a
+  `config/<repo>.yml` profile per repo when you adopt it (`config/_example.yml` shows
+  the shape); or drop it — delete the directory **and** its stage runners
+  `.claude/agents/srh-*.md`, recording both in `dropped:`. If the team has other
+  recurring processes, add one skill per process (a directory + `SKILL.md`, `name`
+  matching the directory).
+- **`.claude/agents/`** — Claude Code subagent definitions that back a skill's stages
+  (`srh-gate`, `srh-deep-reviewer` for `/self-review-heavy`). They pin a model tier and
+  reasoning effort per stage, so leave them alone unless the hub wants different tiers.
+  Vendor-specific by nature: they're the Claude Code wiring for pipelines whose portable
+  half lives in `.agents/skills/`.
 - **`.claude/settings.json`** — resolve `{{CLONE_WORKSPACE}}` in
   `permissions.additionalDirectories` (single-repo: delete that key and the
   `make`/`repos.sh` entries in `permissions.allow`). Mirror the user's risky families into
@@ -220,7 +230,13 @@ After filling a file, **remove the `<!-- TEMPLATE: … -->` guidance comments** 
 
 ## 5. Wire it up and verify
 
-- Make the hooks and scripts executable: `chmod +x .claude/hooks/*.sh scripts/*.sh`.
+- Make the hooks and scripts executable — skills ship scripts too, and
+  `scripts/verify.sh` fails on any that aren't:
+  `chmod +x .claude/hooks/*.sh scripts/*.sh` then
+  `find .agents/skills -name '*.sh' -exec chmod +x {} +`. (Use `find`, not a third
+  glob: a hub that dropped the only skill shipping scripts has nothing for it to
+  match, and under zsh — the macOS default — an unmatched glob aborts the whole
+  command, leaving *every* hook and script non-executable.)
 - If multi-repo: `make repos` (links/clones the repos), then `make status` (branches +
   dirty state). Report what linked and what's missing — don't claim success you didn't see.
 - **If the user opted into linked-repo pointers (§2.9):** add a thin `AGENTS.md` to each

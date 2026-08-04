@@ -39,6 +39,10 @@ printf '\n**Custom term**: the owners wrote this; an update must not touch it.\n
 
 # --- 3. the template moves forward (v2) ------------------------------------------------
 printf '\n# template-v2 machinery marker\n' >> "$TPL/template/scripts/worktree.sh"
+# A skill script also moves — it arrives in the hub by being WRITTEN, so it
+# lands non-executable, which is the whole point of the chmod step below.
+printf '\n# template-v2 skill-script marker\n' \
+  >> "$TPL/template/.agents/skills/self-review-heavy/scripts/bundle.sh"
 cat > "$TPL/template/docs/release-drill.md" <<'EOF'
 # {{PROJECT_NAME}} release drill
 
@@ -68,7 +72,7 @@ while IFS= read -r t; do
   applied="$applied $rel"
 done < <(git_t diff --name-only "$OLD..$NEW" -- template/)
 perl -pi -e "s/^(\\s*sha:).*/\$1 $NEW/" "$HUB/.hub-meta.yml"
-chmod +x "$HUB"/.claude/hooks/*.sh "$HUB"/scripts/*.sh
+chmod +x "$HUB"/.claude/hooks/*.sh "$HUB"/scripts/*.sh "$HUB"/.agents/skills/*/scripts/*.sh
 echo "applied:$applied"
 echo "skipped:$skipped"
 
@@ -85,6 +89,19 @@ if grep -q 'New template term' "$HUB/CONTEXT.md"; then
 fi
 grep -q "sha: $NEW" "$HUB/.hub-meta.yml" \
   || { echo "FAIL: provenance sha not bumped" >&2; exit 1; }
+SRH_BUNDLE="$HUB/.agents/skills/self-review-heavy/scripts/bundle.sh"
+grep -q '^# template-v2 skill-script marker' "$SRH_BUNDLE" \
+  || { echo "FAIL: skill-script change did not land" >&2; exit 1; }
+[ -x "$SRH_BUNDLE" ] || { echo "FAIL: updated skill script is not executable" >&2; exit 1; }
+
+# …and the guard must actually bite, or the chmod step above is the only thing
+# standing between a hub and a skill whose scripts silently can't run.
+chmod -x "$SRH_BUNDLE"
+rc=0; bash "$HUB/scripts/verify.sh" "$HUB" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] \
+  || { echo "FAIL: verify.sh passed a hub with a non-executable skill script" >&2; exit 1; }
+chmod +x "$SRH_BUNDLE"
+
 echo "== verify updated hub =="
 bash "$HUB/scripts/verify.sh" "$HUB"
 

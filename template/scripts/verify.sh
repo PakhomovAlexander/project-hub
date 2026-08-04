@@ -12,7 +12,8 @@
 # Checks (fail):
 #   1. no leftover double-brace placeholder tokens or template guidance markers
 #      (files named _template.md keep them by design and are exempt)
-#   2. hooks + shell scripts are executable; the .claude/skills link resolves
+#   2. hooks + shell scripts (including skill scripts) are executable; the
+#      .claude/skills link resolves
 #   3. relative markdown links resolve to a real file
 #   4. no markdown links INTO repos/ — it is gitignored, so such links break in CI
 #      and on fresh clones; cite those paths as inline code instead
@@ -60,7 +61,13 @@ if [ ! -f "$hook" ]; then
 fi
 while IFS= read -r s; do
   [ -x "$s" ] || { note "NOT EXECUTABLE: chmod +x ${s#"$HUB"/}"; hookbad=1; }
-done < <(find "$HUB/scripts" "$HUB/.claude/hooks" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | sort)
+done < <({
+  find "$HUB/scripts" "$HUB/.claude/hooks" -maxdepth 1 -type f -name '*.sh' 2>/dev/null
+  # Skills ship scripts too, at their own depth. /update-hub copies new
+  # template files in by writing them, which drops the exec bit — without
+  # this the hub gets a skill whose scripts silently can't run.
+  find "$HUB/.agents/skills" -type f -name '*.sh' 2>/dev/null
+} | sort)
 skills="$HUB/.claude/skills"
 if [ -L "$skills" ] && [ ! -e "$skills" ]; then
   note "BROKEN LINK: .claude/skills points nowhere (expected ../.agents/skills)"; hookbad=1

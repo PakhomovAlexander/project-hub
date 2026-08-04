@@ -50,7 +50,11 @@ After any push or PR, **always** check CI and don't call it done until green:
 gh pr view <number> --repo {{ORG}}/<repo> --json statusCheckRollup
 ```
 
-- CI running → wait and recheck. CI failed → read logs, fix, push, wait for green.
+- CI running → **watch it, don't sleep-poll**: `gh pr checks <number> --repo
+  {{ORG}}/<repo> --watch` blocks until the checks settle (background it, or bound it
+  with a timeout, if your harness caps command time). A `sleep`-and-recheck loop burns
+  a model request per poll.
+- CI failed → read logs, fix, push, watch again.
 - **Always paste the full PR URL** (`https://github.com/{{ORG}}/<repo>/pull/<n>`), not just
   the number, so it's clickable.
 
@@ -60,6 +64,11 @@ Run what you build before reporting it done. Type-checks and tests verify code c
 not feature correctness — if you can't run it, say so explicitly rather than claiming
 success. <!-- TEMPLATE: add project-specific dry-run guidance, e.g. for infra prefer
 `terraform plan` / `helm template` / `kubectl --dry-run` over asserting an outcome. -->
+
+Prefer the hub's shipped tooling over hand-rolling the same thing — the `make` targets
+and `scripts/` here, plus whatever ops CLI the project ships. The shipped form encodes
+the project's access quirks and returns output you can parse reliably; the raw-CLI
+equivalent rediscovers both, one flag at a time.
 
 ## Changes land as code
 
@@ -93,12 +102,21 @@ docs** (the tracker, an ADR, the repo's reference doc), not in your agent's priv
 The hub is the project's shared memory: versioned, reviewable, and visible to every agent
 and human. Private memory dies with your machine.
 
+## Scratch space
+
+`./.scratch` (gitignored) is this checkout's scratch area. For Claude Code the session
+hook links it to the harness's per-session scratchpad; any other agent should `mkdir
+.scratch` and use it the same way. Temp files, probe output, and one-off scripts go
+there — not into `docs/`, and not behind a long `/tmp/...` path re-typed on every
+command.
+
 ## Skills — the hub's processes, executable
 
 Recurring workflows live as skills in [`.agents/skills/`](.agents/skills/) (open Agent
 Skills format; Claude Code reads the same files via the `.claude/skills` link): `/adr`,
-`/tracker`, `/resume`, `/onboard-repo`, `/verify`, `/update-hub`. Prefer invoking them
-over improvising the same workflow from memory.
+`/tracker`, `/resume`, `/onboard-repo`, `/verify`, `/update-hub`, `/self-review-heavy`
+(staged multi-model review of a substantial change, pre-PR — expensive, use
+deliberately). Prefer invoking them over improvising the same workflow from memory.
 
 ## Guardrails
 
