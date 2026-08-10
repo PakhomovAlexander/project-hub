@@ -43,6 +43,22 @@ grep -q 'workflow-tests:' "$HUB/.github/workflows/docs-ci.yml" \
 grep -q '"tests/\*\*"' "$HUB/.github/workflows/docs-ci.yml" \
   || { echo "FAIL: workflow test changes do not trigger generated docs CI" >&2; exit 1; }
 
+# A hub with smoke tests must not report success when their runtime is absent.
+NO_NODE_BIN="$WORK/no-node-bin"
+mkdir -p "$NO_NODE_BIN"
+for tool in basename dirname find grep head sed sort; do
+  ln -s "$(command -v "$tool")" "$NO_NODE_BIN/$tool"
+done
+set +e
+PATH="$NO_NODE_BIN" /bin/bash "$HUB/scripts/verify.sh" "$HUB" \
+  > "$WORK/no-node.out" 2>&1
+no_node_rc=$?
+set -e
+[ "$no_node_rc" -ne 0 ] \
+  || { echo "FAIL: verifier passed without Node while smoke tests exist" >&2; exit 1; }
+grep -q 'workflow smoke tests exist but node is unavailable' "$WORK/no-node.out" \
+  || { echo "FAIL: missing-Node diagnostic was not reported" >&2; exit 1; }
+
 # A committed tracker edit newer than its declared snapshot must warn but not fail.
 STALE="$WORK/stale-hub"
 cp -a "$HUB" "$STALE"

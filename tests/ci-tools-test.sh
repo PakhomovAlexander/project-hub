@@ -27,12 +27,25 @@ set -u
 mode="${GH_MODE:-empty}"
 log="${GH_LOG:?}"
 state="${GH_STATE:?}"
+remote="${GH_REMOTE:?}"
 printf '%s\n' "$*" >> "$log"
 case "${1:-} ${2:-}" in
+  "repo view")
+    [ "$mode" != "repo-fail" ] || { echo "repo unavailable" >&2; exit 6; }
+    printf '%s\n' "${GH_DEFAULT_BRANCH:-main}"
+    ;;
   "run list")
     [ "$mode" != "list-fail" ] || { echo "list unavailable" >&2; exit 7; }
     case "$mode" in
-      live|cancel-fail) printf '101\tqueued\tBuild\tabcdef123456\n' ;;
+      live|cancel-fail)
+        head="$(git --git-dir="$remote" rev-parse refs/heads/feature/tooling)"
+        printf '[{"databaseId":101,"status":"queued","headSha":"%s","workflowName":"Build"}]\n' "$head"
+        ;;
+      concurrent)
+        git --git-dir="$remote" update-ref refs/heads/feature/tooling "${GH_CONCURRENT_SHA:?}"
+        printf '[{"databaseId":202,"status":"queued","headSha":"%s","workflowName":"Build"}]\n' "$GH_CONCURRENT_SHA"
+        ;;
+      *) printf '[]\n' ;;
     esac
     ;;
   "run cancel")
@@ -51,8 +64,8 @@ case "${1:-} ${2:-}" in
           printf '[{"name":"Build","bucket":"pass"}]\n'
         fi
         ;;
-      watch-fail) printf '[{"name":"Tests","bucket":"fail"}]\n' ;;
-      watch-cancel) printf '[{"name":"Deploy","bucket":"cancel"}]\n' ;;
+      watch-fail) printf '[{"name":"Tests","bucket":"fail"}]\n'; exit 1 ;;
+      watch-cancel) printf '[{"name":"Deploy","bucket":"cancel"}]\n'; exit 1 ;;
       watch-empty) printf '[]\n' ;;
       watch-api-fail) echo "API unavailable" >&2; exit 9 ;;
       *) printf '[{"name":"Checks","bucket":"pass"}]\n' ;;
@@ -76,6 +89,7 @@ git -C "$REPO" commit -qm base
 git -C "$REPO" remote add origin "$REMOTE"
 git -C "$REPO" push -q -u origin main
 git -C "$REPO" remote set-head origin main
+export GH_REMOTE="$REMOTE"
 
 echo "== push.sh =="
 set +e
@@ -84,6 +98,25 @@ rc=$?
 set -e
 must_rc "$rc" 2 "default branch is refused"
 must_contain "$TMP/out" "refusing to push default branch" "default-branch diagnostic is clear"
+
+set +e
+GH_MODE=repo-fail "$PUSH" -C "$REPO" --repo example/project --dry-run \
+  > "$TMP/out" 2>&1
+rc=$?
+set -e
+must_rc "$rc" 2 "default-branch lookup failure fails closed"
+must_contain "$TMP/out" "could not resolve the GitHub default branch" \
+  "default-branch lookup diagnostic is clear"
+
+git -C "$REPO" switch -qc production
+git -C "$REPO" remote set-head -d origin
+set +e
+GH_MODE=empty GH_DEFAULT_BRANCH=production "$PUSH" -C "$REPO" \
+  --repo example/project --dry-run > "$TMP/out" 2>&1
+rc=$?
+set -e
+must_rc "$rc" 2 "nonstandard GitHub default branch is refused without origin/HEAD"
+git -C "$REPO" switch -q main
 
 git -C "$REPO" switch -qc feature/tooling
 printf 'one\n' >> "$REPO/file.txt"
@@ -98,7 +131,17 @@ else
 fi
 
 : > "$GH_LOG"
+cat > "$TMP/warning-upload-pack" <<'EOF'
+#!/usr/bin/env bash
+echo "warning: transport diagnostic" >&2
+exec git-upload-pack "$@"
+EOF
+chmod +x "$TMP/warning-upload-pack"
+git -C "$REPO" config remote.origin.uploadpack "$TMP/warning-upload-pack"
 GH_MODE=live "$PUSH" -C "$REPO" --repo example/project --yes > "$TMP/out" 2>&1
+git -C "$REPO" config --unset remote.origin.uploadpack
+must_contain "$TMP/out" "warning: transport diagnostic" \
+  "successful ls-remote diagnostic is exercised"
 must_contain "$TMP/out" "no push or CI cancellation needed" \
   "up-to-date branch is recognized as a no-op"
 if grep -qF "run cancel" "$GH_LOG"; then
@@ -154,6 +197,30 @@ git -C "$REPO" remote set-url origin git@github.com:example/project.git
 GH_MODE=empty "$PUSH" -C "$REPO" --dry-run > "$TMP/out" 2>&1
 must_contain "$TMP/out" "repo=example/project" "GitHub repository is inferred from SSH origin"
 git -C "$REPO" remote set-url origin "$REMOTE"
+
+remote_before_race="$(git --git-dir="$REMOTE" rev-parse refs/heads/feature/tooling)"
+race_tree="$(git -C "$REPO" rev-parse "$remote_before_race^{tree}")"
+concurrent_sha="$(printf 'concurrent update\n' \
+  | git -C "$REPO" commit-tree "$race_tree" -p "$remote_before_race")"
+git -C "$REPO" push -q origin "$concurrent_sha:refs/staging/concurrent"
+printf 'three\n' >> "$REPO/file.txt"
+git -C "$REPO" commit -qam three
+: > "$GH_LOG"
+set +e
+GH_MODE=concurrent GH_CONCURRENT_SHA="$concurrent_sha" "$PUSH" -C "$REPO" \
+  --repo example/project --yes > "$TMP/out" 2>&1
+rc=$?
+set -e
+if [ "$rc" -ne 0 ] && [ "$(git --git-dir="$REMOTE" rev-parse refs/heads/feature/tooling)" = "$concurrent_sha" ]; then
+  ok "concurrent remote update rejects the push"
+else
+  bad "concurrent remote update rejects the push"
+fi
+if grep -qF "run cancel" "$GH_LOG"; then
+  bad "concurrent remote update preserves its live CI"
+else
+  ok "concurrent remote update preserves its live CI"
+fi
 
 echo "== watch-ci.sh =="
 : > "$GH_STATE"

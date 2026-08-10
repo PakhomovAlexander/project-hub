@@ -78,16 +78,21 @@ while true; do
   else
     query_status=$?
   fi
-  # `gh pr checks` returns 8 while checks are still pending, even though it
-  # emits valid JSON. Pending is normal watcher state, not an API failure.
-  if [ "$query_status" -ne 0 ] && [ "$query_status" -ne 8 ]; then
+  checks_valid=0
+  if printf '%s' "$checks" | jq -e \
+      'type == "array" and length > 0' >/dev/null 2>&1; then
+    checks_valid=1
+  fi
+  # `gh pr checks` returns 1 for failed checks and 8 while checks are pending,
+  # while still emitting valid JSON. Valid check data wins over command status.
+  if [ "$query_status" -ne 0 ] && [ "$checks_valid" -eq 0 ]; then
     errors=$((errors + 1))
     echo "watch-ci: GitHub query failed ($errors/$MAX_ERRORS): $checks" >&2
     [ "$errors" -lt "$MAX_ERRORS" ] || die "GitHub query failed repeatedly"
     sleep "$INTERVAL"
     continue
   fi
-  if ! printf '%s' "$checks" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+  if [ "$checks_valid" -eq 0 ]; then
     errors=$((errors + 1))
     echo "watch-ci: no checks found yet ($errors/$MAX_ERRORS)" >&2
     [ "$errors" -lt "$MAX_ERRORS" ] || die "no checks appeared"

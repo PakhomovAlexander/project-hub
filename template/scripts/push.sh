@@ -37,16 +37,10 @@ while [ "$#" -gt 0 ]; do
 done
 
 command -v gh >/dev/null 2>&1 || die "gh is required"
+command -v jq >/dev/null 2>&1 || die "jq is required"
 
 branch="$(git_c symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 [ -n "$branch" ] || die "detached HEAD or not a git repository: $DIR"
-
-default_ref="$(git_c symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-default_branch="${default_ref#origin/}"
-if [ "$branch" = "main" ] || [ "$branch" = "master" ] \
-  || { [ -n "$default_branch" ] && [ "$branch" = "$default_branch" ]; }; then
-  die "refusing to push default branch '$branch' — use a feature branch and PR"
-fi
 
 if [ -z "$REPO" ]; then
   origin="$(git_c config --get remote.origin.url 2>/dev/null || true)"
@@ -62,12 +56,30 @@ fi
 [[ "$REPO" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] \
   || die "invalid GitHub repository '$REPO' (expected OWNER/NAME)"
 
+if ! default_branch="$(gh repo view "$REPO" --json defaultBranchRef \
+    --jq '.defaultBranchRef.name')"; then
+  die "could not resolve the GitHub default branch; refusing to push"
+fi
+[[ "$default_branch" =~ ^[^[:space:]]+$ ]] \
+  || die "GitHub returned an invalid default branch; refusing to push"
+if [ "$branch" = "$default_branch" ]; then
+  die "refusing to push default branch '$branch' — use a feature branch and PR"
+fi
+
 local_sha="$(git_c rev-parse HEAD)"
-if remote_ref="$(git_c ls-remote --heads origin "refs/heads/$branch" 2>&1)"; then
-  remote_sha="${remote_ref%%[[:space:]]*}"
-else
-  printf '%s\n' "$remote_ref" >&2
+if ! remote_ref="$(git_c ls-remote --heads origin "refs/heads/$branch")"; then
   die "could not inspect the remote branch; refusing to cancel CI or push"
+fi
+remote_sha=""
+if [ -n "$remote_ref" ]; then
+  case "$remote_ref" in
+    *$'\n'*) die "remote branch lookup returned multiple refs; refusing to push" ;;
+  esac
+  IFS=$'\t' read -r remote_sha remote_name remote_extra <<< "$remote_ref"
+  if ! [[ "$remote_sha" =~ ^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]] \
+    || [ "$remote_name" != "refs/heads/$branch" ] || [ -n "$remote_extra" ]; then
+    die "remote branch lookup returned malformed data; refusing to push"
+  fi
 fi
 
 if [ -n "$remote_sha" ] && [ "$local_sha" = "$remote_sha" ]; then
@@ -99,13 +111,19 @@ if ! preflight="$(git_c "${preflight_args[@]}" 2>&1)"; then
   die "push preflight failed; no CI runs were cancelled"
 fi
 
-if ! live="$(gh run list --repo "$REPO" --branch "$branch" --limit 100 \
-    --json databaseId,status,headSha,workflowName \
-    --jq '.[] | select(.status=="in_progress" or .status=="queued")
-          | "\(.databaseId)\t\(.status)\t\(.workflowName)\t\(.headSha[0:12])"' 2>&1)"; then
-  printf '%s\n' "$live" >&2
+if ! live_json="$(gh run list --repo "$REPO" --branch "$branch" --limit 100 \
+    --json databaseId,status,headSha,workflowName)"; then
   die "could not inspect branch CI; refusing to push without that check"
 fi
+if ! printf '%s' "$live_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  die "GitHub returned malformed branch CI data; refusing to push"
+fi
+live="$(printf '%s' "$live_json" | jq -r --arg observed "$remote_sha" '
+  .[] | select(
+    (.status == "in_progress" or .status == "queued")
+    and .headSha == $observed
+  ) | (.workflowName | tostring | gsub("[\\t\\r\\n]"; " ")) as $workflow
+  | "\(.databaseId)\t\(.status)\t\($workflow)\t\(.headSha[0:12])"')"
 
 if [ -n "$live" ]; then
   echo
@@ -129,7 +147,7 @@ if [ -n "$live" ]; then
       || die "one or more runs could not be cancelled; push was not attempted"
   fi
 else
-  echo "no queued or in-progress runs on this branch"
+  echo "no queued or in-progress runs for the observed remote commit"
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then

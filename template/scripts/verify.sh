@@ -141,6 +141,8 @@ echo "==> workflow smoke tests"
 # the caller did not authorize. Execute tests only when the target is the hub that
 # owns this verifier; the template's verify-hub.sh wrapper remains inspection-only.
 smoke_found=0
+node_available=0
+command -v node >/dev/null 2>&1 && node_available=1
 own_hub="$(cd -- "$(dirname -- "$0")/.." >/dev/null 2>&1 && pwd -P)"
 if [ "$HUB" != "$own_hub" ]; then
   note "SKIP: external hub inspected without executing its smoke tests"
@@ -148,8 +150,7 @@ else
   for smoke_test in "$HUB"/tests/smoke-*.mjs; do
     [ -f "$smoke_test" ] || continue
     smoke_found=1
-    if ! command -v node >/dev/null 2>&1; then
-      note "SKIP: $(basename -- "$smoke_test") — node is unavailable"
+    if [ "$node_available" -eq 0 ]; then
       continue
     fi
     if smoke_output="$(cd -- "$HUB" && node "$smoke_test" 2>&1)"; then
@@ -168,7 +169,12 @@ $smoke_hits
 EOF
     fi
   done
-  [ "$smoke_found" -eq 1 ] || note "no tests/smoke-*.mjs (skipped)"
+  if [ "$smoke_found" -eq 0 ]; then
+    note "no tests/smoke-*.mjs (skipped)"
+  elif [ "$node_available" -eq 0 ]; then
+    fail=1
+    note "FAIL: workflow smoke tests exist but node is unavailable"
+  fi
 fi
 
 # 7: tracker freshness (warn only) -----------------------------------------------------

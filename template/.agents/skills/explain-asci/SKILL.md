@@ -51,10 +51,11 @@ An exact-looking diagram is more dangerous than vague prose when it is wrong. If
 something cannot be established from the implementation, label it as unknown or
 an inference; never draw a guess as a factual arrow.
 
-## 4. Draw physical layout first
+## 4. Choose the diagram that matches the subsystem
 
-Show the arrays, columns, objects, or files as they physically exist before
-explaining their meaning. For example:
+For indexed or stored data, draw physical layout first. Show the arrays,
+columns, objects, or files as they physically exist before explaining their
+meaning. For example:
 
 ```text
                  row:   0    1    2    3
@@ -68,19 +69,29 @@ explaining their meaning. For example:
   slot 0 values:      [ 5, -3 ]
 ```
 
-Then explain the subsystem in this order:
+For control flow, recursion, protocols, or stateful systems, start with actors,
+states, calls, and time instead:
+
+```text
+  caller          parser          output
+    |                |               |
+    |-- token ------>|               |
+    |                |-- recurse --->|
+    |                |<-- value -----|
+    |<-- result -----|               |
+```
+
+Then trace the implementation in the order it actually uses:
 
 1. Name and draw the central relation.
-2. Trace construction step by step, including a hit on an existing entry rather
-   than only first-time insertions.
-3. Draw the resulting tables side by side and mark mutually exclusive fields.
-4. Draw the branch or dispatch path.
-5. Trace every row in a table; do not skip the inconvenient one with “and so on.”
-6. Draw the output and identify the path each value took.
-
-For a control-flow subsystem rather than an in-memory structure, use the same
-discipline with processes, repositories, files, requests, or state transitions as
-the physical units.
+2. Trace construction when construction exists. If entries can be reused, include
+   an existing-entry hit rather than showing only first insertion.
+3. Draw resulting representations side by side when comparison matters. Mark
+   mutually exclusive fields only when the implementation has them.
+4. Draw every relevant branch, call, recursion, dispatch, or state transition.
+5. Trace every row, event, recursive step, or transition in the worked example;
+   do not skip the inconvenient one with “and so on.”
+6. Draw the output or final state and identify the path each value or event took.
 
 ## 5. Close on the surprising bit and the invariants
 
