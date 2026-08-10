@@ -11,12 +11,16 @@ on:
       - "**/*.md"
       - ".markdownlint-cli2.jsonc"
       - ".github/workflows/docs-ci.yml"
+      - ".claude/workflows/**"
+      - "tests/**"
   push:
     branches: [main]
     paths:
       - "**/*.md"
       - ".markdownlint-cli2.jsonc"
       - ".github/workflows/docs-ci.yml"
+      - ".claude/workflows/**"
+      - "tests/**"
 
 concurrency:
   group: docs-${{ github.workflow }}-${{ github.ref }}
@@ -48,3 +52,25 @@ jobs:
         with:
           args: --offline --no-progress "./**/*.md"
           fail: true
+
+  workflow-tests:
+    name: workflow smoke tests (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+      - name: run tests/smoke-*.mjs
+        shell: bash
+        run: |
+          shopt -s nullglob
+          found=0
+          for smoke_test in tests/smoke-*.mjs; do
+            found=1
+            echo "== $smoke_test"
+            node "$smoke_test"
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "no tests/smoke-*.mjs found"
+          fi

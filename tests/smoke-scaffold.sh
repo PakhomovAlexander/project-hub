@@ -15,15 +15,70 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 HUB="$WORK/acme-hub"
+command -v node >/dev/null 2>&1 \
+  || { echo "FAIL: node is required for workflow smoke-test coverage" >&2; exit 2; }
 
 # --- 1. scaffold per SETUP.md §3–§5 (shared with smoke-update.sh: tests/lib.sh) -------
 scaffold_hub "$ROOT" "$HUB" "https://github.com/acme-inc/project-hub" "abc1234"
 
+# Ship one harmless workflow smoke test. The template-level wrapper must inspect
+# without running it; the hub-local verifier must execute it.
+mkdir -p "$HUB/tests"
+cat > "$HUB/tests/smoke-proof.mjs" <<'EOF'
+import { writeFileSync } from 'node:fs'
+writeFileSync('.smoke-ran', 'yes\n')
+EOF
+
 # --- 2. the verifier must PASS on a clean scaffold ------------------------------------
 echo "== verify clean scaffold (wrapper) =="
 "$ROOT/scripts/verify-hub.sh" "$HUB"
+[ ! -e "$HUB/.smoke-ran" ] \
+  || { echo "FAIL: template wrapper executed code from an external hub" >&2; exit 1; }
 echo "== verify clean scaffold (hub-local, sh -euo off-path) =="
 bash "$HUB/scripts/verify.sh" "$HUB"
+[ -f "$HUB/.smoke-ran" ] \
+  || { echo "FAIL: hub-local verifier did not execute smoke-proof.mjs" >&2; exit 1; }
+grep -q 'workflow-tests:' "$HUB/.github/workflows/docs-ci.yml" \
+  || { echo "FAIL: generated docs CI has no workflow smoke job" >&2; exit 1; }
+grep -q '"tests/\*\*"' "$HUB/.github/workflows/docs-ci.yml" \
+  || { echo "FAIL: workflow test changes do not trigger generated docs CI" >&2; exit 1; }
+
+# A hub with smoke tests must not report success when their runtime is absent.
+NO_NODE_BIN="$WORK/no-node-bin"
+mkdir -p "$NO_NODE_BIN"
+for tool in basename dirname find git grep head sed sort; do
+  ln -s "$(command -v "$tool")" "$NO_NODE_BIN/$tool"
+done
+set +e
+PATH="$NO_NODE_BIN" /bin/bash "$HUB/scripts/verify.sh" "$HUB" \
+  > "$WORK/no-node.out" 2>&1
+no_node_rc=$?
+set -e
+[ "$no_node_rc" -ne 0 ] \
+  || { echo "FAIL: verifier passed without Node while smoke tests exist" >&2; exit 1; }
+grep -q 'workflow smoke tests exist but node is unavailable' "$WORK/no-node.out" \
+  || { echo "FAIL: missing-Node diagnostic was not reported" >&2; exit 1; }
+
+# A committed tracker edit newer than its declared snapshot must warn but not fail.
+STALE="$WORK/stale-hub"
+cp -a "$HUB" "$STALE"
+perl -pi -e 's/\*\*Snapshot:\*\* [0-9-]+/**Snapshot:** 2000-01-01/' \
+  "$STALE/docs/tracker.md"
+git -C "$STALE" init -q
+git -C "$STALE" config user.name smoke
+git -C "$STALE" config user.email smoke@example.invalid
+git -C "$STALE" add -A
+GIT_AUTHOR_DATE='2000-01-02T12:00:00Z' GIT_COMMITTER_DATE='2000-01-02T12:00:00Z' \
+  git -C "$STALE" commit -qm 'tracker edited without snapshot bump'
+bash "$STALE/scripts/verify.sh" "$STALE" > "$WORK/stale.out"
+grep -q 'tracker edited 2000-01-02 but its Snapshot line still says 2000-01-01' \
+  "$WORK/stale.out" \
+  || { echo "FAIL: newer committed tracker edit was not reported" >&2; exit 1; }
+PATH="$NO_NODE_BIN" /bin/bash "$STALE/scripts/verify.sh" "$STALE" \
+  > "$WORK/stale-no-python.out" 2>&1 || true
+grep -q 'tracker edited 2000-01-02 but its Snapshot line still says 2000-01-01' \
+  "$WORK/stale-no-python.out" \
+  || { echo "FAIL: committed tracker edit needs no Python to be reported" >&2; exit 1; }
 
 # --- 3. …and must FAIL on planted defects (no vacuous passes) -------------------------
 BAD="$WORK/bad-hub"
@@ -67,6 +122,8 @@ fresh; printf '\n[r](../repos/acme/README.md)\n' >> "$ONE/docs/plan.md"; must_fa
 fresh; chmod -x "$ONE/scripts/verify.sh"                             ; must_fail "a non-exec script"
 fresh; find "$ONE/.agents/skills" -name '*.sh' -exec chmod -x {} +   ; must_fail "a non-exec skill script"
 fresh; rm "$ONE/.hub-meta.yml"                                       ; must_fail "missing provenance"
+fresh; printf 'throw new Error("failing assertion: planted")\n' \
+  > "$ONE/tests/smoke-planted.mjs"                                   ; must_fail "a failing workflow smoke test"
 
 echo
 echo "OK — scaffold verifies clean, and every planted defect fails on its own."

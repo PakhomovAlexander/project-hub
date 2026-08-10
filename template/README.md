@@ -35,7 +35,7 @@ back.
 ├── CLAUDE.md              # thin Claude Code adapter: imports AGENTS.md + CONTEXT.md
 ├── TEAM.md                # people ↔ GitHub ↔ ownership
 ├── .hub-meta.yml          # where this hub came from — powers /update-hub
-├── Makefile · scripts/    # repo links/status · worktrees · verify.sh · session-stats.sh
+├── Makefile · scripts/    # repo links · worktrees · verify · safe push/CI watch · stats
 ├── repos.manifest         # the list of repos this hub coordinates
 ├── .agents/skills/        # executable hub processes: /adr /tracker /resume … (any agent)
 ├── .claude/               # settings (allow/ask lists) + hooks (session brief, risky-cmd gate)
@@ -59,6 +59,8 @@ make repos        # link the key repos into ./repos (clone what's missing)
 make status       # see what branch each repo is on and whether it's dirty
 make list         # the repo manifest
 make session-stats # where the agent harness spends its time and tokens (local, aggregate)
+scripts/push.sh --dry-run # inspect branch CI before a deliberate push
+scripts/watch-ci.sh 42    # watch one PR to a terminal result
 ```
 
 ## Running several agents at once

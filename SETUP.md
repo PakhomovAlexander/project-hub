@@ -54,9 +54,10 @@ preserve them as you fill things in:
   an ADR, refresh the tracker, resume a workstream, onboard a repo, self-check — ship as
   skills in the open Agent Skills format (Claude Code reads the same files via the
   `.claude/skills` link).
-- **Docs stay honest automatically** (`.markdownlint-cli2.jsonc`, `.github/workflows/docs-ci.yml`).
-  markdownlint + an offline internal-link check on every PR — the continuous form of
-  `scripts/verify.sh`, which also ships inside the hub for local runs (`/verify`).
+- **Docs and workflow harnesses stay honest automatically** (`.markdownlint-cli2.jsonc`,
+  `.github/workflows/docs-ci.yml`). Markdownlint + an offline internal-link check run on
+  documentation changes; optional `tests/smoke-*.mjs` exercise agent workflows offline.
+  `scripts/verify.sh` ships the same local checks inside the hub (`/verify`).
 - **Honesty discipline.** Verify before claiming done; fix stale docs in the same change;
   don't open cosmetic PRs.
 
@@ -128,10 +129,15 @@ at a time). Use sensible defaults and say what you assumed. Minimum set:
    If it's Jira/Linear/another tool with an MCP server, offer to add a project-scoped
    `.mcp.json` so agents get the backlog as tools (GitHub needs none — `gh` covers it).
 6. **Team** (optional) — people ↔ GitHub handles ↔ areas of ownership, and a default owner.
-7. **Risky commands** — which command families should *prompt before running*. Offer the
+7. **Risky commands and CI cost** — which command families should *prompt before running*.
+   Offer the
    default set (`git push`, `aws`, `gcloud`, `az`, `kubectl`, `helm`, `terraform`,
    `terragrunt`, `docker push`) and let them add/remove. The answer lands in **two synced
    places**: `RISKY_WORDS` in the hook and `permissions.ask` in `.claude/settings.json`.
+   Also ask whether CI is costly enough to keep the superseded-run cleanup guidance in
+   `AGENTS.md`. The shipped helper inspects and prompts before the push, then cancels
+   captured old-SHA runs only after the push succeeds; if that policy is unnecessary,
+   delete the conditional paragraph while customizing the hub.
 8. **Known decisions** — any architectural decisions already made, to seed as ADRs.
 9. **Linked-repo pointers** (multi-repo only) — offer to add a thin `AGENTS.md` to each
    linked repo, via that repo's normal PR flow, so the hub's invariants travel with agents
@@ -169,7 +175,7 @@ Work through the copied skeleton and make it real:
 - **`CLAUDE.md`** — leave it thin: keep the `@AGENTS.md` + `@CONTEXT.md` imports at the
   top, resolve the placeholders, and that's it. The rules live in `AGENTS.md` only, never
   duplicated here. (Single-repo: trim the linked-clones phrase from the guardrails bullet.)
-- **`.agents/skills/`** — the seven skills are generic; keep them as-is. Single-repo
+- **`.agents/skills/`** — the eight skills are generic; keep them as-is. Single-repo
   project: delete `onboard-repo/` (but keep `update-hub/` — it's how the hub takes
   template upgrades later). `/self-review-heavy` is the heavy pre-PR review pipeline —
   it needs `jq` (plus the codex CLI for its cross-model stage); wire a
@@ -177,7 +183,8 @@ Work through the copied skeleton and make it real:
   the shape); or drop it — delete the directory **and** its stage runners
   `.claude/agents/srh-*.md`, recording both in `dropped:`. If the team has other
   recurring processes, add one skill per process (a directory + `SKILL.md`, `name`
-  matching the directory).
+  matching the directory). `/explain-asci` is documentation-only and needs no
+  repo-specific configuration.
 - **`.claude/agents/`** — Claude Code subagent definitions that back a skill's stages
   (`srh-gate`, `srh-deep-reviewer` for `/self-review-heavy`). They pin a model tier and
   reasoning effort per stage, so leave them alone unless the hub wants different tiers.
@@ -186,7 +193,8 @@ Work through the copied skeleton and make it real:
 - **`.claude/settings.json`** — resolve `{{CLONE_WORKSPACE}}` in
   `permissions.additionalDirectories` (single-repo: delete that key and the
   `make`/`repos.sh` entries in `permissions.allow`). Mirror the user's risky families into
-  `permissions.ask`, kept in sync with the hook's `RISKY_WORDS`.
+  `permissions.ask`, kept in sync with the hook's `RISKY_WORDS`. Keep the shipped
+  `scripts/push.sh` entry in `permissions.ask`: it contains an otherwise-hidden `git push`.
 - **`.hub-meta.yml`** — the hub's provenance, read by `/update-hub` when the template
   improves later (see [`UPDATE.md`](UPDATE.md)). Resolve `{{TEMPLATE_URL}}` (this
   template repo's clone URL) and `{{TEMPLATE_SHA}}` (its `git rev-parse --short HEAD`),
@@ -254,16 +262,18 @@ After filling a file, **remove the `<!-- TEMPLATE: … -->` guidance comments** 
 
   If the repo already has an `AGENTS.md`, append a short "Coordinated from the hub"
   section instead of replacing it.
-- The `.github/workflows/docs-ci.yml` gate (markdownlint + offline link check) runs once the
-  hub is pushed to GitHub; keep it, or delete `.github/` and `.markdownlint-cli2.jsonc` if the
-  hub won't live on GitHub. If the user wants an *agentic* review lane too (tracker
+- The `.github/workflows/docs-ci.yml` gate (markdownlint + offline link check + optional
+  offline `tests/smoke-*.mjs`) runs once the hub is pushed to GitHub; keep it, or delete
+  `.github/` and `.markdownlint-cli2.jsonc` if the hub won't live on GitHub. If the user
+  wants an *agentic* review lane too (tracker
   freshness, doc consistency on PRs), offer a workflow on `anthropics/claude-code-action@v1`
   — opt-in only, since it needs an API-key secret configured.
 - **Run the verifier:** `scripts/verify.sh` inside the hub — it ships with the hub (this
   template repo wraps the same script as `scripts/verify-hub.sh <hub-dir>`). It fails on
   leftover placeholders / template markers, non-executable hooks, broken internal links,
-  and links into `repos/` — the §7 checks, automated. Fix everything it flags before
-  reporting done.
+  links into `repos/`, and failing workflow smoke tests — the §7 checks, automated. The
+  template wrapper only inspects an external hub; the hub-local invocation is what executes
+  that hub's tests. Fix everything it flags before reporting done.
 - **Finalize `.hub-meta.yml`** — confirm `template.sha` is the commit you actually
   scaffolded from and `dropped:` lists everything you removed. This file is what turns a
   future `/update-hub` run (see [`UPDATE.md`](UPDATE.md)) into a clean three-way merge

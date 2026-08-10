@@ -15,8 +15,8 @@
 #
 # TEMPLATE: edit RISKY_WORDS for your project. The defaults cover common infra/cloud
 # tooling; further branches below gate `git`/`docker push`, `git clean`, recursive
-# `rm`, `find -delete`, package publishing, PR-merge/release via `gh`, and a deploy
-# script run by path. Add your own command families (e.g. `ssh`, a bespoke deploy
+# `rm`, `find -delete`, package publishing, PR-merge/release via `gh`, and push/deploy
+# scripts run by path. Add your own command families (e.g. `ssh`, a bespoke deploy
 # CLI) to RISKY_WORDS, or trim what you don't use — and mirror the change in
 # permissions.ask in .claude/settings.json.
 set -u
@@ -59,6 +59,9 @@ re="$re|${b}gh[[:space:]]+(pr[[:space:]]+merge|repo[[:space:]]+delete|release[[:
 re="$re|${b}gh[[:space:]]+api([[:space:]]+[^[:space:]]+)*[[:space:]]+(-X|--method)[[:space:]]+(POST|PUT|PATCH|DELETE)${e}"
 # a deploy script invoked by path, e.g. ./scripts/deploy.sh — a word-list can't see it.
 re="$re|${b}([./A-Za-z0-9_-]*/)?deploy(\.[A-Za-z]+)?${e}"
+# A push wrapper contains a hidden `git push`; gate the wrapper at its entry point.
+script_b="(^|[;&|(\"'\`][[:space:]]*)((env[[:space:]]+)?([_A-Za-z][_A-Za-z0-9]*=[^[:space:]]+[[:space:]]+)*)((bash|sh)[[:space:]]+)?"
+re="$re|${script_b}([./A-Za-z0-9_-]*/)?push(\.[A-Za-z]+)?${e}"
 
 if printf '%s\n' "$cmd" | grep -Eq "$re"; then
   printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Prod-affecting / destructive command — confirm before running."}}'
