@@ -5,10 +5,12 @@
 #   scripts/push.sh [-C DIR] [--repo OWNER/NAME] [--force-with-lease]
 #                   [--yes] [--dry-run]
 #
-# The repository is inferred from a GitHub origin when --repo is omitted. The
+# The repository is inferred from the GitHub origin; --repo asserts the expected
+# OWNER/NAME and must match that origin. The
 # script refuses the default branch and detached HEAD. If queued or in-progress
-# runs exist on the branch, it shows them and asks before cancelling. --yes skips
-# that inner prompt; the hub's command guard still treats this wrapper as a push.
+# runs exist on the branch, it shows them and asks before pushing and then
+# cancelling the superseded runs. --yes skips that inner prompt; the hub's
+# command guard still treats this wrapper as a push.
 
 set -euo pipefail
 
@@ -42,19 +44,24 @@ command -v jq >/dev/null 2>&1 || die "jq is required"
 branch="$(git_c symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 [ -n "$branch" ] || die "detached HEAD or not a git repository: $DIR"
 
-if [ -z "$REPO" ]; then
-  origin="$(git_c config --get remote.origin.url 2>/dev/null || true)"
-  case "$origin" in
-    git@github.com:*) REPO="${origin#git@github.com:}" ;;
-    ssh://git@github.com/*) REPO="${origin#ssh://git@github.com/}" ;;
-    https://github.com/*) REPO="${origin#https://github.com/}" ;;
-    http://github.com/*) REPO="${origin#http://github.com/}" ;;
-    *) die "origin is not a GitHub repository; pass --repo OWNER/NAME" ;;
-  esac
-  REPO="${REPO%.git}"
-fi
+origin="$(git_c config --get remote.origin.url 2>/dev/null || true)"
+case "$origin" in
+  git@github.com:*) origin_repo="${origin#git@github.com:}" ;;
+  ssh://git@github.com/*) origin_repo="${origin#ssh://git@github.com/}" ;;
+  https://github.com/*) origin_repo="${origin#https://github.com/}" ;;
+  http://github.com/*) origin_repo="${origin#http://github.com/}" ;;
+  *) die "origin is not a GitHub repository; cannot bind CI inspection to the push target" ;;
+esac
+origin_repo="${origin_repo%.git}"
+[[ "$origin_repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] \
+  || die "origin has an invalid GitHub repository path"
+[ -n "$REPO" ] || REPO="$origin_repo"
 [[ "$REPO" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] \
   || die "invalid GitHub repository '$REPO' (expected OWNER/NAME)"
+origin_key="$(printf '%s' "$origin_repo" | tr '[:upper:]' '[:lower:]')"
+repo_key="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
+[ "$repo_key" = "$origin_key" ] \
+  || die "--repo '$REPO' does not match origin repository '$origin_repo'"
 
 if ! default_branch="$(gh repo view "$REPO" --json defaultBranchRef \
     --jq '.defaultBranchRef.name')"; then
@@ -127,24 +134,13 @@ live="$(printf '%s' "$live_json" | jq -r --arg observed "$remote_sha" '
 
 if [ -n "$live" ]; then
   echo
-  echo "Queued or in-progress runs this push would orphan:"
+  echo "Queued or in-progress runs this push will supersede:"
   printf '%s\n' "$live" | sed 's/^/  /'
   echo
-  echo "Cancelling discards the evidence those runs have gathered for their SHA."
+  echo "They will be cancelled only after the new commit is pushed successfully."
   if [ "$DRY_RUN" -eq 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
-    read -r -p "Cancel these runs and push? [y/N] " reply || reply=""
+    read -r -p "Push, then cancel these superseded runs? [y/N] " reply || reply=""
     case "$reply" in y|Y|yes|YES) : ;; *) echo "aborted"; exit 1 ;; esac
-  fi
-  if [ "$DRY_RUN" -eq 0 ]; then
-    cancel_failed=0
-    while IFS=$'\t' read -r run_id _rest; do
-      [ -n "$run_id" ] || continue
-      if ! gh run cancel "$run_id" --repo "$REPO"; then
-        cancel_failed=1
-      fi
-    done <<< "$live"
-    [ "$cancel_failed" -eq 0 ] \
-      || die "one or more runs could not be cancelled; push was not attempted"
   fi
 else
   echo "no queued or in-progress runs for the observed remote commit"
@@ -157,4 +153,18 @@ fi
 
 [ -n "$upstream" ] || push_args+=(-u)
 push_args+=(origin "HEAD:refs/heads/$branch")
-git_c "${push_args[@]}"
+if ! git_c "${push_args[@]}"; then
+  die "push failed; no CI runs were cancelled"
+fi
+
+if [ -n "$live" ]; then
+  cancel_failed=0
+  while IFS=$'\t' read -r run_id _rest; do
+    [ -n "$run_id" ] || continue
+    if ! gh run cancel "$run_id" --repo "$REPO"; then
+      cancel_failed=1
+    fi
+  done <<< "$live"
+  [ "$cancel_failed" -eq 0 ] \
+    || die "push succeeded, but one or more superseded runs could not be cancelled"
+fi

@@ -46,7 +46,7 @@ grep -q '"tests/\*\*"' "$HUB/.github/workflows/docs-ci.yml" \
 # A hub with smoke tests must not report success when their runtime is absent.
 NO_NODE_BIN="$WORK/no-node-bin"
 mkdir -p "$NO_NODE_BIN"
-for tool in basename dirname find grep head sed sort; do
+for tool in basename dirname find git grep head sed sort; do
   ln -s "$(command -v "$tool")" "$NO_NODE_BIN/$tool"
 done
 set +e
@@ -74,6 +74,11 @@ bash "$STALE/scripts/verify.sh" "$STALE" > "$WORK/stale.out"
 grep -q 'tracker edited 2000-01-02 but its Snapshot line still says 2000-01-01' \
   "$WORK/stale.out" \
   || { echo "FAIL: newer committed tracker edit was not reported" >&2; exit 1; }
+PATH="$NO_NODE_BIN" /bin/bash "$STALE/scripts/verify.sh" "$STALE" \
+  > "$WORK/stale-no-python.out" 2>&1 || true
+grep -q 'tracker edited 2000-01-02 but its Snapshot line still says 2000-01-01' \
+  "$WORK/stale-no-python.out" \
+  || { echo "FAIL: committed tracker edit needs no Python to be reported" >&2; exit 1; }
 
 # --- 3. …and must FAIL on planted defects (no vacuous passes) -------------------------
 BAD="$WORK/bad-hub"

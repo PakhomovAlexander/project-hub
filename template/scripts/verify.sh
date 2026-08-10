@@ -184,10 +184,7 @@ if [ -f "$tracker" ]; then
   snap="$(grep -m1 'Snapshot:' "$tracker" 2>/dev/null | grep -Eo '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -n1 || true)"
   if [ -z "${snap:-}" ]; then
     note "WARN: docs/tracker.md has no dated Snapshot line"
-  elif command -v python3 >/dev/null 2>&1; then
-    age="$(python3 -c 'import sys, datetime
-d = datetime.date.fromisoformat(sys.argv[1])
-print((datetime.date.today() - d).days)' "$snap" 2>/dev/null || true)"
+  else
     git_root="$(git -C "$HUB" rev-parse --show-toplevel 2>/dev/null || true)"
     gitdate=""
     if [ "$git_root" = "$HUB" ]; then
@@ -196,13 +193,18 @@ print((datetime.date.today() - d).days)' "$snap" 2>/dev/null || true)"
     fi
     if [ -n "${gitdate:-}" ] && [ "$gitdate" \> "$snap" ]; then
       note "WARN: tracker edited $gitdate but its Snapshot line still says $snap — refresh it (/tracker)"
-    elif [ -n "${age:-}" ] && [ "$age" -gt 14 ] 2>/dev/null; then
-      note "WARN: tracker snapshot is ${age} days old ($snap) and no newer committed edit was found — refresh it (/tracker)"
+    elif command -v python3 >/dev/null 2>&1; then
+      age="$(python3 -c 'import sys, datetime
+d = datetime.date.fromisoformat(sys.argv[1])
+print((datetime.date.today() - d).days)' "$snap" 2>/dev/null || true)"
+      if [ -n "${age:-}" ] && [ "$age" -gt 14 ] 2>/dev/null; then
+        note "WARN: tracker snapshot is ${age} days old ($snap) and no newer committed edit was found — refresh it (/tracker)"
+      else
+        note "fresh enough ($snap)"
+      fi
     else
-      note "fresh enough ($snap)"
+      note "snapshot dated $snap with no newer committed edit (install python3 for age check)"
     fi
-  else
-    note "snapshot dated $snap (install python3 for age check)"
   fi
 else
   note "no docs/tracker.md (skipped)"

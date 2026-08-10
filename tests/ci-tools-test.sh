@@ -41,6 +41,11 @@ case "${1:-} ${2:-}" in
         head="$(git --git-dir="$remote" rev-parse refs/heads/feature/tooling)"
         printf '[{"databaseId":101,"status":"queued","headSha":"%s","workflowName":"Build"}]\n' "$head"
         ;;
+      partial-cancel)
+        head="$(git --git-dir="$remote" rev-parse refs/heads/feature/tooling)"
+        printf '[{"databaseId":101,"status":"queued","headSha":"%s","workflowName":"Build"},' "$head"
+        printf '{"databaseId":102,"status":"in_progress","headSha":"%s","workflowName":"Tests"}]\n' "$head"
+        ;;
       concurrent)
         git --git-dir="$remote" update-ref refs/heads/feature/tooling "${GH_CONCURRENT_SHA:?}"
         printf '[{"databaseId":202,"status":"queued","headSha":"%s","workflowName":"Build"}]\n' "$GH_CONCURRENT_SHA"
@@ -50,6 +55,10 @@ case "${1:-} ${2:-}" in
     ;;
   "run cancel")
     [ "$mode" != "cancel-fail" ] || { echo "cancel unavailable" >&2; exit 8; }
+    if [ "$mode" = "partial-cancel" ] && [ "${3:-}" = "102" ]; then
+      echo "cancel unavailable" >&2
+      exit 8
+    fi
     ;;
   "pr checks")
     count=0
@@ -89,6 +98,8 @@ git -C "$REPO" commit -qm base
 git -C "$REPO" remote add origin "$REMOTE"
 git -C "$REPO" push -q -u origin main
 git -C "$REPO" remote set-head origin main
+git -C "$REPO" config url."file://$REMOTE".insteadOf git@github.com:example/project.git
+git -C "$REPO" remote set-url origin git@github.com:example/project.git
 export GH_REMOTE="$REMOTE"
 
 echo "== push.sh =="
@@ -107,6 +118,15 @@ set -e
 must_rc "$rc" 2 "default-branch lookup failure fails closed"
 must_contain "$TMP/out" "could not resolve the GitHub default branch" \
   "default-branch lookup diagnostic is clear"
+
+set +e
+GH_MODE=empty "$PUSH" -C "$REPO" --repo different/project --dry-run \
+  > "$TMP/out" 2>&1
+rc=$?
+set -e
+must_rc "$rc" 2 "mismatched --repo is refused"
+must_contain "$TMP/out" "does not match origin repository" \
+  "repository-mismatch diagnostic is clear"
 
 git -C "$REPO" switch -qc production
 git -C "$REPO" remote set-head -d origin
@@ -174,29 +194,36 @@ else
 fi
 
 set +e
-GH_MODE=cancel-fail "$PUSH" -C "$REPO" --repo example/project --yes > "$TMP/out" 2>&1
+: > "$GH_LOG"
+GH_MODE=partial-cancel "$PUSH" -C "$REPO" --repo example/project --yes > "$TMP/out" 2>&1
 rc=$?
 set -e
-must_rc "$rc" 2 "cancellation failure fails closed"
-if [ "$before" = "$(git --git-dir="$REMOTE" rev-parse refs/heads/feature/tooling)" ]; then
-  ok "cancellation failure does not push"
+must_rc "$rc" 2 "partial cancellation failure is reported"
+if [ "$(git -C "$REPO" rev-parse HEAD)" = \
+  "$(git --git-dir="$REMOTE" rev-parse refs/heads/feature/tooling)" ]; then
+  ok "push supersedes evidence before partial cancellation failure"
 else
-  bad "cancellation failure does not push"
+  bad "push supersedes evidence before partial cancellation failure"
 fi
+must_contain "$GH_LOG" "run cancel 101" "first captured run was cancelled"
+must_contain "$GH_LOG" "run cancel 102" "later cancellation was attempted"
+must_contain "$TMP/out" "push succeeded, but" \
+  "partial-cancellation diagnostic distinguishes the successful push"
 
+printf 'after-partial\n' >> "$REPO/file.txt"
+git -C "$REPO" commit -qam after-partial
+: > "$GH_LOG"
 GH_MODE=live "$PUSH" -C "$REPO" --repo example/project --yes > "$TMP/out" 2>&1
 if [ "$(git -C "$REPO" rev-parse HEAD)" = \
   "$(git --git-dir="$REMOTE" rev-parse refs/heads/feature/tooling)" ]; then
-  ok "confirmed cancellation is followed by push"
+  ok "successful push is followed by cancellation"
 else
-  bad "confirmed cancellation is followed by push"
+  bad "successful push is followed by cancellation"
 fi
+must_contain "$GH_LOG" "run cancel 101" "superseded run is cancelled after push"
 
-git -C "$REPO" config url."file://$REMOTE".insteadOf git@github.com:example/project.git
-git -C "$REPO" remote set-url origin git@github.com:example/project.git
 GH_MODE=empty "$PUSH" -C "$REPO" --dry-run > "$TMP/out" 2>&1
 must_contain "$TMP/out" "repo=example/project" "GitHub repository is inferred from SSH origin"
-git -C "$REPO" remote set-url origin "$REMOTE"
 
 remote_before_race="$(git --git-dir="$REMOTE" rev-parse refs/heads/feature/tooling)"
 race_tree="$(git -C "$REPO" rev-parse "$remote_before_race^{tree}")"
