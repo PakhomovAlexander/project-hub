@@ -48,9 +48,9 @@ there edits that working copy **on whatever branch it currently has checked out*
      when superseded runs are cheap enough that cancellation adds more friction than value. -->
 
 If CI is costly, verify locally and batch deliberate pushes. Use `scripts/push.sh -C
-<repo>` to inspect queued/in-progress runs before pushing; it shows the evidence that
-would be discarded and asks before cancellation. Use `--dry-run` when you only want the
-inspection.
+<repo>` to inspect queued/in-progress runs before pushing. It asks before the push and
+cancels captured old-SHA runs only after the new commit is pushed successfully. Use
+`--dry-run` when you only want the inspection.
 
 After any push or PR, **always** check CI and don't call it done until green:
 

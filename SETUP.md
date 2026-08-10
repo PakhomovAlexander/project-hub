@@ -134,8 +134,10 @@ at a time). Use sensible defaults and say what you assumed. Minimum set:
    default set (`git push`, `aws`, `gcloud`, `az`, `kubectl`, `helm`, `terraform`,
    `terragrunt`, `docker push`) and let them add/remove. The answer lands in **two synced
    places**: `RISKY_WORDS` in the hook and `permissions.ask` in `.claude/settings.json`.
-   Also ask whether CI is costly enough to keep the cancel-before-push guidance in
-   `AGENTS.md`; if not, delete that conditional paragraph while customizing the hub.
+   Also ask whether CI is costly enough to keep the superseded-run cleanup guidance in
+   `AGENTS.md`. The shipped helper inspects and prompts before the push, then cancels
+   captured old-SHA runs only after the push succeeds; if that policy is unnecessary,
+   delete the conditional paragraph while customizing the hub.
 8. **Known decisions** — any architectural decisions already made, to seed as ADRs.
 9. **Linked-repo pointers** (multi-repo only) — offer to add a thin `AGENTS.md` to each
    linked repo, via that repo's normal PR flow, so the hub's invariants travel with agents
