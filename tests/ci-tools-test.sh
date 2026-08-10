@@ -46,6 +46,7 @@ case "${1:-} ${2:-}" in
       watch-pass)
         if [ "$count" -eq 1 ]; then
           printf '[{"name":"Build","bucket":"pending"}]\n'
+          exit 8
         else
           printf '[{"name":"Build","bucket":"pass"}]\n'
         fi
@@ -96,6 +97,16 @@ else
   bad "ordinary feature push succeeds"
 fi
 
+: > "$GH_LOG"
+GH_MODE=live "$PUSH" -C "$REPO" --repo example/project --yes > "$TMP/out" 2>&1
+must_contain "$TMP/out" "no push or CI cancellation needed" \
+  "up-to-date branch is recognized as a no-op"
+if grep -qF "run cancel" "$GH_LOG"; then
+  bad "no-op push preserves live CI"
+else
+  ok "no-op push preserves live CI"
+fi
+
 printf 'two\n' >> "$REPO/file.txt"
 git -C "$REPO" commit -qam two
 before="$(git --git-dir="$REMOTE" rev-parse refs/heads/feature/tooling)"
@@ -138,6 +149,7 @@ else
   bad "confirmed cancellation is followed by push"
 fi
 
+git -C "$REPO" config url."file://$REMOTE".insteadOf git@github.com:example/project.git
 git -C "$REPO" remote set-url origin git@github.com:example/project.git
 GH_MODE=empty "$PUSH" -C "$REPO" --dry-run > "$TMP/out" 2>&1
 must_contain "$TMP/out" "repo=example/project" "GitHub repository is inferred from SSH origin"

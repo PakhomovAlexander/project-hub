@@ -73,7 +73,14 @@ first=1
 errors=0
 
 while true; do
-  if ! checks="$(gh pr checks "$PR" --repo "$REPO" --json name,bucket 2>&1)"; then
+  if checks="$(gh pr checks "$PR" --repo "$REPO" --json name,bucket 2>&1)"; then
+    query_status=0
+  else
+    query_status=$?
+  fi
+  # `gh pr checks` returns 8 while checks are still pending, even though it
+  # emits valid JSON. Pending is normal watcher state, not an API failure.
+  if [ "$query_status" -ne 0 ] && [ "$query_status" -ne 8 ]; then
     errors=$((errors + 1))
     echo "watch-ci: GitHub query failed ($errors/$MAX_ERRORS): $checks" >&2
     [ "$errors" -lt "$MAX_ERRORS" ] || die "GitHub query failed repeatedly"

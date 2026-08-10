@@ -49,7 +49,7 @@ if [ "$branch" = "main" ] || [ "$branch" = "master" ] \
 fi
 
 if [ -z "$REPO" ]; then
-  origin="$(git_c remote get-url origin 2>/dev/null || true)"
+  origin="$(git_c config --get remote.origin.url 2>/dev/null || true)"
   case "$origin" in
     git@github.com:*) REPO="${origin#git@github.com:}" ;;
     ssh://git@github.com/*) REPO="${origin#ssh://git@github.com/}" ;;
@@ -62,8 +62,42 @@ fi
 [[ "$REPO" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] \
   || die "invalid GitHub repository '$REPO' (expected OWNER/NAME)"
 
+local_sha="$(git_c rev-parse HEAD)"
+if remote_ref="$(git_c ls-remote --heads origin "refs/heads/$branch" 2>&1)"; then
+  remote_sha="${remote_ref%%[[:space:]]*}"
+else
+  printf '%s\n' "$remote_ref" >&2
+  die "could not inspect the remote branch; refusing to cancel CI or push"
+fi
+
+if [ -n "$remote_sha" ] && [ "$local_sha" = "$remote_sha" ]; then
+  echo "repo=$REPO branch=$branch already matches origin/$branch"
+  echo "no push or CI cancellation needed"
+  exit 0
+fi
+
 ahead="$(git_c rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo '?')"
 echo "repo=$REPO branch=$branch unpushed=$ahead force=$FORCE"
+
+preflight_args=(push --dry-run)
+push_args=(push)
+upstream="$(git_c rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+if [ "$FORCE" -eq 1 ]; then
+  tracked_sha="$(git_c rev-parse "refs/remotes/origin/$branch" 2>/dev/null || true)"
+  if [ -n "$tracked_sha" ]; then
+    lease="--force-with-lease=refs/heads/$branch:$tracked_sha"
+    preflight_args+=("$lease")
+    push_args+=("$lease")
+  fi
+fi
+preflight_args+=(origin "HEAD:refs/heads/$branch")
+
+# Prove the ref update is currently acceptable before discarding any live CI.
+# The real push can still lose a race, but force pushes retain their exact lease.
+if ! preflight="$(git_c "${preflight_args[@]}" 2>&1)"; then
+  printf '%s\n' "$preflight" >&2
+  die "push preflight failed; no CI runs were cancelled"
+fi
 
 if ! live="$(gh run list --repo "$REPO" --branch "$branch" --limit 100 \
     --json databaseId,status,headSha,workflowName \
@@ -103,14 +137,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-push_args=(push)
-upstream="$(git_c rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
-if [ "$FORCE" -eq 1 ]; then
-  remote_sha="$(git_c rev-parse "refs/remotes/origin/$branch" 2>/dev/null || true)"
-  if [ -n "$remote_sha" ]; then
-    push_args+=("--force-with-lease=refs/heads/$branch:$remote_sha")
-  fi
-fi
 [ -n "$upstream" ] || push_args+=(-u)
 push_args+=(origin "HEAD:refs/heads/$branch")
 git_c "${push_args[@]}"
