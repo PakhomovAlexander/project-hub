@@ -18,8 +18,11 @@
 #   4. no markdown links INTO repos/ — it is gitignored, so such links break in CI
 #      and on fresh clones; cite those paths as inline code instead
 #   5. .hub-meta.yml provenance present and resolved — /update-hub depends on it
+#   6. tests/smoke-*.mjs pass when verifying this script's own hub; an external
+#      target is inspected but its code is never executed
 # Warns (never fail):
-#   6. docs/tracker.md snapshot date is old or missing
+#   7. docs/tracker.md snapshot date is old, missing, or older than the file's
+#      latest committed edit
 #
 # Portable: runs under macOS stock bash 3.2 (no mapfile / associative arrays).
 set -u
@@ -29,7 +32,7 @@ if [ ! -d "$HUB" ]; then
   echo "not a directory: $HUB" >&2
   exit 2
 fi
-HUB="$(cd -- "$HUB" >/dev/null 2>&1 && pwd)"
+HUB="$(cd -- "$HUB" >/dev/null 2>&1 && pwd -P)"
 
 fail=0
 note() { printf '  %s\n' "$1"; }
@@ -59,15 +62,19 @@ hook="$HUB/.claude/hooks/ask-before-risky-commands.sh"
 if [ ! -f "$hook" ]; then
   note "MISSING: $hook"; hookbad=1
 fi
-while IFS= read -r s; do
-  [ -x "$s" ] || { note "NOT EXECUTABLE: chmod +x ${s#"$HUB"/}"; hookbad=1; }
-done < <({
+script_files="$(
   find "$HUB/scripts" "$HUB/.claude/hooks" -maxdepth 1 -type f -name '*.sh' 2>/dev/null
   # Skills ship scripts too, at their own depth. /update-hub copies new
   # template files in by writing them, which drops the exec bit — without
-  # this the hub gets a skill whose scripts silently can't run.
+  # this the hub gets a skill whose scripts silently cannot run.
   find "$HUB/.agents/skills" -type f -name '*.sh' 2>/dev/null
-} | sort)
+)"
+while IFS= read -r s; do
+  [ -n "$s" ] || continue
+  [ -x "$s" ] || { note "NOT EXECUTABLE: chmod +x ${s#"$HUB"/}"; hookbad=1; }
+done <<EOF
+$script_files
+EOF
 skills="$HUB/.claude/skills"
 if [ -L "$skills" ] && [ ! -e "$skills" ]; then
   note "BROKEN LINK: .claude/skills points nowhere (expected ../.agents/skills)"; hookbad=1
@@ -128,7 +135,43 @@ else
 fi
 if [ "$metabad" -eq 0 ]; then note "ok"; else fail=1; fi
 
-# 6: tracker freshness (warn only) -----------------------------------------------------
+# 6: workflow smoke tests --------------------------------------------------------------
+echo "==> workflow smoke tests"
+# verify.sh accepts a directory argument and may therefore inspect a hub whose code
+# the caller did not authorize. Execute tests only when the target is the hub that
+# owns this verifier; the template's verify-hub.sh wrapper remains inspection-only.
+smoke_found=0
+own_hub="$(cd -- "$(dirname -- "$0")/.." >/dev/null 2>&1 && pwd -P)"
+if [ "$HUB" != "$own_hub" ]; then
+  note "SKIP: external hub inspected without executing its smoke tests"
+else
+  for smoke_test in "$HUB"/tests/smoke-*.mjs; do
+    [ -f "$smoke_test" ] || continue
+    smoke_found=1
+    if ! command -v node >/dev/null 2>&1; then
+      note "SKIP: $(basename -- "$smoke_test") — node is unavailable"
+      continue
+    fi
+    if smoke_output="$(cd -- "$HUB" && node "$smoke_test" 2>&1)"; then
+      note "pass: $(basename -- "$smoke_test")"
+    else
+      fail=1
+      note "FAIL: $(basename -- "$smoke_test")"
+      smoke_hits="$(printf '%s\n' "$smoke_output" \
+        | grep -E '^[[:space:]]+FAIL|failing assertion' || true)"
+      [ -n "$smoke_hits" ] \
+        || smoke_hits="$(printf '%s\n' "$smoke_output" | tail -n 12)"
+      while IFS= read -r smoke_line; do
+        note "  $smoke_line"
+      done <<EOF
+$smoke_hits
+EOF
+    fi
+  done
+  [ "$smoke_found" -eq 1 ] || note "no tests/smoke-*.mjs (skipped)"
+fi
+
+# 7: tracker freshness (warn only) -----------------------------------------------------
 echo "==> tracker freshness (warning only)"
 tracker="$HUB/docs/tracker.md"
 if [ -f "$tracker" ]; then
@@ -139,8 +182,16 @@ if [ -f "$tracker" ]; then
     age="$(python3 -c 'import sys, datetime
 d = datetime.date.fromisoformat(sys.argv[1])
 print((datetime.date.today() - d).days)' "$snap" 2>/dev/null || true)"
-    if [ -n "${age:-}" ] && [ "$age" -gt 14 ] 2>/dev/null; then
-      note "WARN: tracker snapshot is ${age} days old ($snap) — refresh it (/tracker)"
+    git_root="$(git -C "$HUB" rev-parse --show-toplevel 2>/dev/null || true)"
+    gitdate=""
+    if [ "$git_root" = "$HUB" ]; then
+      gitdate="$(git -C "$HUB" log -1 --format=%cd --date=short \
+        -- docs/tracker.md 2>/dev/null || true)"
+    fi
+    if [ -n "${gitdate:-}" ] && [ "$gitdate" \> "$snap" ]; then
+      note "WARN: tracker edited $gitdate but its Snapshot line still says $snap — refresh it (/tracker)"
+    elif [ -n "${age:-}" ] && [ "$age" -gt 14 ] 2>/dev/null; then
+      note "WARN: tracker snapshot is ${age} days old ($snap) and no newer committed edit was found — refresh it (/tracker)"
     else
       note "fresh enough ($snap)"
     fi

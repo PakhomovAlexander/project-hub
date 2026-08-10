@@ -6,10 +6,12 @@
       "Bash(make help)",
       "Bash(make worktree-ls)",
       "Bash(scripts/repos.sh --status)",
-      "Bash(scripts/repos.sh --list)"
+      "Bash(scripts/repos.sh --list)",
+      "Bash(scripts/watch-ci.sh:*)"
     ],
     "ask": [
       "Bash(git push:*)",
+      "Bash(scripts/push.sh:*)",
       "Bash(docker push:*)",
       "Bash(aws:*)",
       "Bash(gcloud:*)",

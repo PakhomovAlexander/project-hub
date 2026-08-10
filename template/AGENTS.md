@@ -44,16 +44,24 @@ there edits that working copy **on whatever branch it currently has checked out*
 
 ## PR / CI discipline
 
+<!-- TEMPLATE: Keep the next paragraph when CI is slow, scarce, or expensive; delete it
+     when superseded runs are cheap enough that cancellation adds more friction than value. -->
+
+If CI is costly, verify locally and batch deliberate pushes. Use `scripts/push.sh -C
+<repo>` to inspect queued/in-progress runs before pushing; it shows the evidence that
+would be discarded and asks before cancellation. Use `--dry-run` when you only want the
+inspection.
+
 After any push or PR, **always** check CI and don't call it done until green:
 
 ```
 gh pr view <number> --repo {{ORG}}/<repo> --json statusCheckRollup
 ```
 
-- CI running → **watch it, don't sleep-poll**: `gh pr checks <number> --repo
-  {{ORG}}/<repo> --watch` blocks until the checks settle (background it, or bound it
-  with a timeout, if your harness caps command time). A `sleep`-and-recheck loop burns
-  a model request per poll.
+- CI running → **watch it, don't model-poll**: `scripts/watch-ci.sh <number> --repo
+  {{ORG}}/<repo>` stays in one process, reports every failure/cancellation, and exits
+  when all checks settle. `gh pr checks <number> --repo {{ORG}}/<repo> --watch` is the
+  simpler alternative. A sleep-and-recheck loop burns a model request per poll.
 - CI failed → read logs, fix, push, watch again.
 - **Always paste the full PR URL** (`https://github.com/{{ORG}}/<repo>/pull/<n>`), not just
   the number, so it's clickable.
@@ -115,8 +123,9 @@ command.
 Recurring workflows live as skills in [`.agents/skills/`](.agents/skills/) (open Agent
 Skills format; Claude Code reads the same files via the `.claude/skills` link): `/adr`,
 `/tracker`, `/resume`, `/onboard-repo`, `/verify`, `/update-hub`, `/self-review-heavy`
-(staged multi-model review of a substantial change, pre-PR — expensive, use
-deliberately). Prefer invoking them over improvising the same workflow from memory.
+(staged multi-model review of a substantial change, pre-PR — expensive, use deliberately),
+and `/explain-asci` (trace code with diagrams and one verified worked example). Prefer
+invoking them over improvising the same workflow from memory.
 
 ## Guardrails
 

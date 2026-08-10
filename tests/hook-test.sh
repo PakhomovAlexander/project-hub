@@ -21,6 +21,9 @@ CASES=(
   "ask|git stash && git push"
   "ask|bash -c 'git push'"
   "ask|docker push registry/img:tag"
+  "ask|scripts/push.sh --dry-run"
+  "ask|./scripts/push.sh -C ../service"
+  "ask|bash -c './tools/push.py --yes'"
   "ask|./scripts/deploy.sh prod"
   "ask|npm run deploy"
   # --- must prompt: cloud / infra CLIs -------------------------------------------
@@ -60,6 +63,8 @@ CASES=(
   "none|docker build ."
   "none|docker compose up -d"
   "none|gh pr view 42"
+  "none|scripts/watch-ci.sh 42"
+  "none|cat scripts/push.sh"
   "none|gh api repos/a/b"
   "none|npm install"
   "none|npm test"

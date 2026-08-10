@@ -28,7 +28,8 @@ Most "AI in the repo" setups give the agent a `CLAUDE.md` and hope. A hub goes f
   format): `/adr`, `/tracker`, `/resume`, `/onboard-repo`, `/verify`, `/update-hub`,
   `/self-review-heavy` (a staged multi-model pre-PR review pipeline: local gate → deep
   architecture/perf review → cross-model second opinion, iterated to convergence on a
-  findings ledger, with benchmark demands for performance claims).
+  findings ledger, with benchmark demands for performance claims), and `/explain-asci`
+  (one verified worked example traced through the actual implementation).
 - **`docs/adr/`** — decisions recorded with options + consequences, superseding over time.
 - **`docs/tracker.md`** — a living status board: what's true *right now*, dated — and a
   session-start hook that briefs every new session on it (and flags it when stale).
@@ -39,11 +40,13 @@ Most "AI in the repo" setups give the agent a `CLAUDE.md` and hope. A hub goes f
 - **`scripts/repos.sh` + `repos.manifest`** — link many live repos into `repos/` as symlinks.
 - **`scripts/worktree.sh`** — run several agents over one hub at once, each in its own git
   worktree, without branch/index collisions.
+- **`scripts/push.sh` + `scripts/watch-ci.sh`** — inspect superseded branch runs before a
+  push and watch a PR to a terminal result without model-driven polling.
 - **`.claude/settings.json` + hooks** — layered guardrails: safe hub commands pre-allowed,
   risky families prompt first (declarative `ask` rules backed by a wrapper-aware hook that
   never widens your own permission config).
-- **`.github/` docs CI + `scripts/verify.sh`** — markdownlint + an offline link check on
-  every PR, and the same checks runnable locally, so the docs can't silently rot.
+- **`.github/` docs CI + `scripts/verify.sh`** — markdownlint, offline link checking, and
+  optional workflow smoke tests on every relevant PR, with the same checks runnable locally.
 
 The result: an agent can pick up cold work, speak your domain, respect your rules, not nuke
 prod, and run alongside a dozen of its peers — and a human can read the whole project's state
@@ -91,9 +94,9 @@ your-project-hub/
 ├── README.md              # the hub's own front door
 ├── TEAM.md                # people ↔ GitHub ↔ ownership (optional)
 ├── .hub-meta.yml          # provenance: template url + sha + answers — powers /update-hub
-├── Makefile · scripts/    # link/status the repos · worktrees · verify.sh self-check
+├── Makefile · scripts/    # repo links/status · worktrees · verify · safe push/CI watch
 ├── repos.manifest         # the list of repos this hub coordinates
-├── .agents/skills/        # /adr /tracker /resume /onboard-repo /verify /self-review-heavy (any agent)
+├── .agents/skills/        # /adr /tracker /resume /verify /self-review-heavy /explain-asci …
 ├── .claude/               # permission lists, hooks (session brief, risky-cmd gate), agents/
 ├── .github/workflows/     # docs CI: markdownlint + offline link check
 ├── .markdownlint-cli2.jsonc # light, high-signal Markdown rules
@@ -125,7 +128,7 @@ invariants, the ADRs, and the safety hook.
 - [`scripts/verify-hub.sh`](scripts/verify-hub.sh) — run it against a generated hub to catch
   leftover placeholders, broken internal links (including links into gitignored `repos/`),
   and non-executable hooks before calling setup done. The same verifier ships *inside*
-  every hub as `scripts/verify.sh`.
+  every hub as `scripts/verify.sh`, where it can also run that hub's workflow smoke tests.
 - [`tests/`](tests/) + [`.github/workflows/template-ci.yml`](.github/workflows/template-ci.yml)
   — the template tests itself on every PR: shellcheck, a table-driven test of the safety
   hook, a full scaffold-then-verify smoke run, and an update drill (scaffold at v1 →

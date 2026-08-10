@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Self-check the hub — leftover placeholders, broken internal links, links into gitignored repos/, non-executable hooks, stale tracker. Run before pushing doc changes or after any bulk edit.
+description: Self-check the hub — placeholders, links, executable tooling, workflow smoke tests, provenance, and tracker freshness. Run before pushing doc or hub-tooling changes and after bulk edits.
 ---
 
 # Verify the hub
@@ -15,6 +15,9 @@ description: Self-check the hub — leftover placeholders, broken internal links
      break in CI because `repos/` is gitignored.
    - Leftover placeholder tokens or template markers → fill with the real value if you
      know it; otherwise ask, don't invent.
+   - A failed `tests/smoke-*.mjs` test → reproduce it directly with `node`, then fix the
+     workflow or its test. The verifier executes these only for its own hub, never for an
+     external directory passed as an argument.
 3. **Escalate what's factual:** a stale-tracker warning means the board may be lying —
    run `/tracker` (or flag it) rather than just editing the date.
 4. Done = `scripts/verify.sh` exits 0. Re-run it after your fixes and say so.

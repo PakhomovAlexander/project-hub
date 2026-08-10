@@ -22,6 +22,7 @@ The two imports above are binding: [`AGENTS.md`](AGENTS.md) is the **working agr
   harness-cost numbers (context bands, cache decomposition, permission-gate hits,
   repeated commands). Local aggregates only; nothing is written or uploaded.
 - Skills: `/adr` · `/tracker` · `/resume` · `/onboard-repo` · `/verify` · `/update-hub` ·
-  `/self-review-heavy`, loaded from [`.agents/skills/`](.agents/skills/) via the
-  `.claude/skills` link. `/self-review-heavy`'s stage runners are the `srh-gate` and
-  `srh-deep-reviewer` agents in [`.claude/agents/`](.claude/agents/).
+  `/self-review-heavy` · `/explain-asci`, loaded from
+  [`.agents/skills/`](.agents/skills/) via the `.claude/skills` link.
+  `/self-review-heavy`'s stage runners are the `srh-gate` and `srh-deep-reviewer`
+  agents in [`.claude/agents/`](.claude/agents/).
