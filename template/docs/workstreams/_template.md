@@ -2,10 +2,16 @@
 
 <!-- TEMPLATE: a deep doc for one in-flight workstream (epic/track). Copy to a real name.
      The point is that work survives interruption: anyone (human or agent) can read this and
-     pick it up cold. Keep the Status header and the "Resume here" section honest. -->
+     pick it up cold. Keep the Status header and the "Resume here" section honest.
+     This live doc records what is TRUE NOW, and it has a byte budget (scripts/verify.sh
+     warns past 16KB): the play-by-play — session narratives, long command output, dead
+     ends — goes to <name>/log.md next to it (append-only, no budget; grep it, don't read
+     it whole). When a phase concludes, fold its conclusions in here and move the
+     narrative to the log in the same edit. -->
 
 **Status:** {{proposal / in progress / blocked}} — {{one-line state.}}
 **Goal:** {{what "done" means for this workstream, in one sentence.}}
+**Log:** {{<name>/log.md — the evidence archive, once it exists}}
 
 ## Summary
 

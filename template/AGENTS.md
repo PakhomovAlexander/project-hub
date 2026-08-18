@@ -81,6 +81,26 @@ and `scripts/` here, plus whatever ops CLI the project ships. The shipped form e
 the project's access quirks and returns output you can parse reliably; the raw-CLI
 equivalent rediscovers both, one flag at a time.
 
+## Token discipline
+
+Context is the resource that runs out first. Every model turn re-sends everything already
+in the session, so a document's real cost is its size **times** the turns that follow it —
+and whatever the session brief injects, every session pays at start. Keep the working set
+small:
+
+- **Live docs say what is true; logs say how we learned it.** The tracker and the
+  workstream docs stay within the byte budgets `scripts/verify.sh` checks. Detail moves
+  cold — a workstream's `<name>/log.md`, `docs/tracker-archive.md` — verbatim, never
+  deleted. Fold conclusions into the live doc and move the narrative out in the same edit.
+- Read big files by section (search first, then read the range); don't re-read what you
+  already hold. Redirect long command output to a file and read the tail.
+- Batch independent shell commands into one call; a sweep across many files goes to a
+  subagent that returns conclusions, not transcripts.
+- One workstream per session. Park state in the workstream doc and start fresh instead of
+  pivoting with a huge context in tow.
+- `scripts/session-stats.sh` shows where this hub's sessions actually spend tokens — run
+  it before and after turning any knob here.
+
 ## Changes land as code
 
 <!-- TEMPLATE: KEEP this for a project whose live state is reconciled from git (GitOps/ArgoCD,

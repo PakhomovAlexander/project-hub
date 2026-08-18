@@ -10,7 +10,9 @@ argument-hint: [workstream]
    `Status:` line and ask which one (or pick the only in-progress one).
 2. **Load the context, in order:**
    - The workstream doc itself — especially **Status**, **Acceptance criteria**, and
-     **Open work (resume here)**, which is the live to-do.
+     **Open work (resume here)**, which is the live to-do. Load only this live doc; its
+     `<name>/log.md` pair (when present) is the cold evidence archive — grep it when a
+     specific claim needs provenance, don't read it whole.
    - Its rows in `docs/tracker.md`, and any ADRs the doc links.
 3. **Verify before trusting.** Status lines drift. Check the doc's claims against
    reality: do the branches/PRs it mentions exist and in what state (`gh pr view`), did

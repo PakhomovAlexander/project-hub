@@ -17,7 +17,9 @@ The tracker is only useful if it's current, and only trustworthy if it's honest.
    - The reality-vs-plan blockquote — if reality has diverged from `docs/plan.md`, say so
      plainly here; don't silently rewrite the plan.
    - **In flight now** — one row per active item: state, where (link the PR/workstream),
-     and the *next concrete action*.
+     and the *next concrete action*. A cell carries at most a state glyph, a one-line
+     state, and the next action — evidence and history move **verbatim** into the linked
+     workstream doc; shipped or dormant rows move to `docs/tracker-archive.md`.
    - **Open decisions / gaps** — mark resolved ones ☑ and strike them; the history of what
      was decided should stay readable.
    - Workstream states, and the repo branch snapshot table (multi-repo hubs).
@@ -28,5 +30,9 @@ The tracker is only useful if it's current, and only trustworthy if it's honest.
    - Keep the diff minimal and factual; no cosmetic rewording.
    - Archive, don't delete: when a dated point-in-time section (an old repo-branch
      snapshot, a superseded status block) stops being current, move it to
-     `docs/tracker-archive.md` (create it on first use). The board stays short enough
-     to read — and to inject into the session brief — while history stays greppable.
+     `docs/tracker-archive.md` (ships with the hub; create it if missing). The board
+     stays short enough to read — and to inject into the session brief — while history
+     stays greppable.
+   - The board has a byte budget (`scripts/verify.sh` check 8): if the refresh leaves
+     `docs/tracker.md` over it, compact — by moving, never by deleting — before you
+     finish.
