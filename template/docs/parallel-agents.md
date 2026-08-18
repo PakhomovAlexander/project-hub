@@ -12,6 +12,11 @@ branches or stage files will clobber each other. Give every agent its own
 object store (cheap — no re-clone). Git refuses to check out one branch in two
 worktrees, so the collision is structurally impossible, not just discouraged.
 
+The same rule applies with **one** agent: the main hub checkout is the owner's
+live working copy — it may sit on an in-flight branch with uncommitted work,
+exactly like the linked repos. An agent doing hub work (docs, tooling, a PR)
+does it in its own worktree and leaves the main checkout untouched.
+
 ## Two kinds of workspace
 
 Pick the one that matches the agent's task.
@@ -60,6 +65,7 @@ pushed/merged, re-run — or `FORCE=1 make worktree-rm NAME=tracker` to discard.
 
 ## Rules of thumb
 
+- **The main checkout is the owner's** — agents work from a worktree even when alone.
 - **One worktree per agent** — never two agents in the same directory.
 - **One writer per linked repo**, unless you've given them separate worktrees.
 - Branch per agent (`agent/<name>`), PR per task — same discipline as the rest of the hub.
