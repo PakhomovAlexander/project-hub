@@ -26,8 +26,11 @@ there edits that working copy **on whatever branch it currently has checked out*
   in-flight work there (feature branches, uncommitted changes).
 - These are separate git repos. Commit/push happens **inside** `repos/<name>`, against
   `{{ORG}}/<name>` — not from the hub. The hub commits only its own docs/tooling.
-- **Running several agents over the hub at once?** Give each its own `git worktree` — one
-  checkout has a single branch + index, so parallel agents collide. See
+- **Agent work on the hub itself also happens in a `git worktree`** — same discipline as the
+  linked repos. The main hub checkout is the owner's live working copy (its own branch,
+  uncommitted work); don't branch, commit, or stage there. `make worktree NAME=<task>` gives
+  each task its own sibling directory + `agent/<name>` branch — and with several agents at
+  once, one worktree each, so they can't collide. See
   [`docs/parallel-agents.md`](docs/parallel-agents.md) (`make worktree` / `make worktree-repo`).
 
 ## Invariants (don't break these)
