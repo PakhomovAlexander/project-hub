@@ -15,6 +15,11 @@ Maintain it as work moves — it's only useful if it's current.
 
 ## In flight now
 
+One row per active item; a cell carries at most a state glyph, a one-line state, and the
+next concrete action. Evidence and history live in the linked workstream doc — if a cell
+needs a second sentence, it belongs there. Shipped or dormant rows move verbatim to
+[`tracker-archive.md`](tracker-archive.md).
+
 | Item | State | Where | Next action |
 |------|-------|-------|-------------|
 | {{item}} | ◐ | {{workstream doc / PR — link it}} | {{the next concrete step}} |

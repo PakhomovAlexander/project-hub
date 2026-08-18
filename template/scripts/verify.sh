@@ -20,9 +20,12 @@
 #   5. .hub-meta.yml provenance present and resolved — /update-hub depends on it
 #   6. tests/smoke-*.mjs pass when verifying this script's own hub; an external
 #      target is inspected but its code is never executed
-# Warns (never fail):
+# Warns (never fail by default):
 #   7. docs/tracker.md snapshot date is old, missing, or older than the file's
 #      latest committed edit
+#   8. token budgets — the always-loaded agent files and the docs a session reads
+#      every time exceed their byte budgets (HUB_BUDGET_STRICT=1 makes this fail;
+#      HUB_BUDGET_* env vars override the individual budgets)
 #
 # Portable: runs under macOS stock bash 3.2 (no mapfile / associative arrays).
 set -u
@@ -208,6 +211,67 @@ print((datetime.date.today() - d).days)' "$snap" 2>/dev/null || true)"
   fi
 else
   note "no docs/tracker.md (skipped)"
+fi
+
+# 8: token budgets (warn unless HUB_BUDGET_STRICT=1) -----------------------------------
+# Resident docs are re-sent on every model turn, so their real cost is size × turns —
+# and the session brief injects tracker rows into every session's start. Budgets keep
+# the working set small. Over budget = move content cold (a workstream's log.md,
+# docs/tracker-archive.md) verbatim; never fix a budget by deleting the record.
+echo "==> token budgets (docs a session keeps resident)"
+BUDGET_HOT="${HUB_BUDGET_HOT:-24576}"              # CLAUDE.md + AGENTS.md + CONTEXT.md
+BUDGET_TRACKER="${HUB_BUDGET_TRACKER:-8192}"       # docs/tracker.md
+BUDGET_WORKSTREAM="${HUB_BUDGET_WORKSTREAM:-16384}" # each live docs/workstreams/*.md
+BUDGET_REPO_DOC="${HUB_BUDGET_REPO_DOC:-8192}"     # each docs/repos/*.md
+budgetbad=0
+budget_over() {
+  note "OVER BUDGET: $1 is $2 bytes (budget $3) — $4"
+  budgetbad=1
+}
+fsize() { wc -c < "$1" | tr -d '[:space:]'; }
+
+hot=0
+for f in "$HUB/CLAUDE.md" "$HUB/AGENTS.md" "$HUB/CONTEXT.md"; do
+  if [ -f "$f" ]; then
+    hot=$((hot + $(fsize "$f")))
+  fi
+done
+if [ "$hot" -gt "$BUDGET_HOT" ]; then
+  budget_over "CLAUDE.md+AGENTS.md+CONTEXT.md" "$hot" "$BUDGET_HOT" \
+    "every session loads these on every turn; move rationale into linked docs"
+fi
+if [ -f "$HUB/docs/tracker.md" ]; then
+  sz="$(fsize "$HUB/docs/tracker.md")"
+  if [ "$sz" -gt "$BUDGET_TRACKER" ]; then
+    budget_over "docs/tracker.md" "$sz" "$BUDGET_TRACKER" \
+      "evidence belongs in workstream docs; shipped rows in docs/tracker-archive.md"
+  fi
+fi
+for f in "$HUB"/docs/workstreams/*.md; do
+  [ -f "$f" ] || continue
+  case "$f" in */_template.md) continue ;; esac
+  sz="$(fsize "$f")"
+  if [ "$sz" -gt "$BUDGET_WORKSTREAM" ]; then
+    rel="${f#"$HUB"/}"
+    budget_over "$rel" "$sz" "$BUDGET_WORKSTREAM" \
+      "move the narrative to ${rel%.md}/log.md (see docs/workstreams/_template.md)"
+  fi
+done
+for f in "$HUB"/docs/repos/*.md; do
+  [ -f "$f" ] || continue
+  case "$f" in */_template.md) continue ;; esac
+  sz="$(fsize "$f")"
+  if [ "$sz" -gt "$BUDGET_REPO_DOC" ]; then
+    budget_over "${f#"$HUB"/}" "$sz" "$BUDGET_REPO_DOC" \
+      "keep the dev loop; move history into a workstream doc or ADR"
+  fi
+done
+if [ "$budgetbad" -eq 0 ]; then
+  note "within budget"
+elif [ "${HUB_BUDGET_STRICT:-0}" = "1" ]; then
+  fail=1
+else
+  note "WARN only — set HUB_BUDGET_STRICT=1 to make this failing"
 fi
 
 echo
