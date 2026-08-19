@@ -103,8 +103,10 @@ Map `template/<path>` → `<hub>/<path>`. For each path in the delta, in this or
 - Restore the exec bit — you *wrote* those files rather than copying them, so they came
   out non-executable no matter what mode the template has them in:
   `chmod +x .claude/hooks/*.sh scripts/*.sh` then
-  `find .agents/skills -name '*.sh' -exec chmod +x {} +` (`find`, not a third glob —
-  an unmatched glob aborts the whole command under zsh).
+  `find .agents/skills tools -name '*.sh' -exec chmod +x {} +` (`find`, not more globs —
+  an unmatched glob aborts the whole command under zsh). `tools` is in that find because
+  the Review Kernel ships `tools/review-kernel/fixtures/synthetic/generate.sh`, which
+  `make review-kernel-fixtures` executes directly.
 - Run the hub's `scripts/verify.sh` — the **freshly updated** one, so new checks apply.
   Fix everything it flags.
 - Bump `.hub-meta.yml`: `template.sha` → the sha you updated to; add or refresh an

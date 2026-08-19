@@ -18,10 +18,6 @@ on:
       - ".review/**"
       - ".agents/skills/self-review-heavy/scripts/**"
       - "Makefile"
-      - "tools/review-kernel/**"
-      - ".review/**"
-      - ".agents/skills/self-review-heavy/scripts/**"
-      - "Makefile"
   push:
     branches: [main]
     paths:
@@ -30,6 +26,10 @@ on:
       - ".github/workflows/docs-ci.yml"
       - ".claude/workflows/**"
       - "tests/**"
+      - "tools/review-kernel/**"
+      - ".review/**"
+      - ".agents/skills/self-review-heavy/scripts/**"
+      - "Makefile"
 
 concurrency:
   group: docs-${{ github.workflow }}-${{ github.ref }}

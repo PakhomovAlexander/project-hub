@@ -77,8 +77,9 @@ review-kernel: review-kernel-fmt review-kernel-lint review-kernel-test
 review-kernel-fmt:
 	cargo +1.88.0 fmt --manifest-path $(RK_MANIFEST) --all -- --check
 
+# -D warnings: a lint gate that only prints is not a gate. The workspace is warning-clean.
 review-kernel-lint:
-	cargo +1.88.0 clippy --manifest-path $(RK_MANIFEST) --all-targets --locked
+	cargo +1.88.0 clippy --manifest-path $(RK_MANIFEST) --all-targets --locked -- -D warnings
 
 review-kernel-test:
 	cargo +1.88.0 test --manifest-path $(RK_MANIFEST) --locked

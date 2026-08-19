@@ -72,8 +72,10 @@ Triage every open finding — never silently skip one:
   `reviewctl resolve --campaign <name> <key> rejected --note "<why, with evidence>"`.
 - **Real but deliberately not fixing** → `wontfix` **requires the owner's explicit
   sign-off**; record who agreed in the note.
-- **Benchmark demands** are part of the bar: a finding guarded by a demand is not
-  `fixed` until the measurement exists
+- **A fix that rests on a performance claim is not `fixed` until the measurement exists.**
+  The kernel does not track this for you — the reviewer contract carries a
+  `benchmark_demands` field, but nothing stores or replays it — so the bar is yours to
+  hold: put the number in the resolution note
   ([`references/benchmark-validity.md`](references/benchmark-validity.md)).
 
 After fixing and committing:
@@ -104,7 +106,16 @@ ledger is the record; your report is a summary of it, not a substitute.
 ## Legacy
 
 Version 1 of this skill was a shell harness (`scripts/`, stage playbooks, the `srh-*`
-stage-runner agents). The kernel replaced its orchestration end to end. `scripts/`
-remains **deliberately**: it is the reference implementation that regenerates the frozen
-fixture corpus (`tools/review-kernel/fixtures/synthetic/generate.sh --check`, gated in
-CI). The stage playbooks and stage-runner agents are retired.
+stage-runner agents). The kernel replaced its orchestration end to end, and only what
+something still uses was kept:
+
+- `ledger.sh` and `checks.sh` are the reference implementation the kernel is proved
+  against — `tools/review-kernel/fixtures/synthetic/generate.sh --check` regenerates the
+  fixture corpus by running them, gated in CI.
+- `bundle.sh` captures a review bundle, which is how a hub freezes its own private
+  acceptance corpus (`tools/review-kernel/fixtures/legacy/README.md`).
+- `findings.schema.json` is the shape both the above and the kernel's reviewer contract
+  speak.
+
+The stage playbooks, the stage-runner agents, and the Codex stage script are retired: the
+kernel drives Codex through `review-runner-codex` instead.

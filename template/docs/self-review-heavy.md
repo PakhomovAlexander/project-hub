@@ -114,14 +114,20 @@ Reviewers: `architecture` (arch) and `performance` (perf). Defaults from
 ```
 
 The fold for perf's report (`apply_report` in `crates/review-store/src/ledger.rs`): the
-finding exists, its status is active, and blocker outranks major → **escalated**: severity
-becomes blocker, `news_round = 1`, both reports stay attached, and the finding still belongs
-to `arch` (first in canonical order).
+finding exists, its status is active, and blocker outranks major → **escalated**. Escalation
+calls `adopt`, so the re-reporter's severity, body, line and **source** all replace what was
+there: severity becomes blocker, `news_round = 1`, the finding's source becomes `perf`, and
+both reports stay attached.
+
+Ownership follows severity here, not arrival. Canonical admission order decides who owns a
+finding only for a plain **duplicate** — a re-report at the same or lower severity changes
+nothing, so the first reporter keeps it. An escalation is the case where the later report is
+the better one, and the ledger says so.
 
 ```
  ledger after round 1:
  key            sev      status  news  reports        source
- a1b2c3d4e5f6   blocker  open    1     [arch, perf]   arch
+ a1b2c3d4e5f6   blocker  open    1     [arch, perf]   perf   <- adopted on escalation
  b7c8d9e0f1a2   minor    open    1     [arch]         arch
 ```
 
@@ -185,8 +191,9 @@ an infrastructure failure re-enters the same round instead of consuming one of t
 
 What a future editor would be breaking:
 
-- Results are admitted in node-ID order, never completion order — reorder that and finding
-  ownership becomes nondeterministic and replay lies.
+- Results are admitted in node-ID order, never completion order — reorder that and both the
+  event stream and duplicate ownership become nondeterministic, and replay lies. (Ownership of
+  an *escalated* finding is decided by severity, not order: escalation adopts the re-reporter.)
 - The ledger is only ever rebuilt from the event log; nothing writes projection state
   directly.
 - `rejected` / `wontfix` never travel to reviewers and never auto-reopen.
