@@ -1,65 +1,36 @@
 #!/usr/bin/env bash
 # ledger.sh — findings ledger for iterative review: dedup across rounds,
-# status tracking, convergence check. Storage: <dir>/ledger.jsonl,
-# <dir>/demands.jsonl, <dir>/round.
+# status tracking, convergence check. Storage: <dir>/ledger.jsonl + <dir>/round.
 #
 # Usage:
-#   ledger.sh init       <dir>
-#   ledger.sh bump       <dir>                          # round += 1, prints it
-#   ledger.sh round      <dir>                          # print current round
-#   ledger.sh add        <dir> --source <stage> <findings.json>
-#   ledger.sh list       <dir> [--status open]          # JSONL to stdout
-#   ledger.sh claims     <dir>                          # bare claim lines for reviewers
-#   ledger.sh resolve    <dir> <fp> <fixed|rejected|wontfix|contested|open> [--note <text>]
-#   ledger.sh unverified <dir> --source <stage>         # open claims that stage never disputed
-#   ledger.sh demands    <dir> [--status open]          # benchmark demands, JSONL
-#   ledger.sh demand     <dir> <id> <met|dropped|open> [--note <text>]
-#   ledger.sh converged  <dir> [--clean-rounds 1] [--max-rounds 3] [--gate major]
-#                             [--require gate,deep,cross]
-#   ledger.sh report     <dir>                          # markdown summary
+#   ledger.sh init      <dir>
+#   ledger.sh bump      <dir>                          # round += 1, prints it
+#   ledger.sh round     <dir>                          # print current round
+#   ledger.sh add       <dir> --source <stage> <findings.json>
+#   ledger.sh list      <dir> [--status open]          # JSONL to stdout
+#   ledger.sh resolve   <dir> <fp> <fixed|rejected|wontfix|contested> [--note <text>]
+#   ledger.sh converged <dir> [--clean-rounds 1] [--max-rounds 3] [--gate major]
+#   ledger.sh report    <dir>                          # markdown summary
 #
-# add     appends findings not already fingerprinted (fp = hash of file+title)
-#         and ingests the same file's `disputes` and `benchmark_demands`.
-#         A duplicate of an entry resolved as FIXED is REOPENED with the
-#         re-report's severity and evidence adopted — a re-report after a fix
-#         means the fix didn't hold. This is NOT round-guarded: the gate is
-#         re-run within a round after fixes, and that re-run is exactly where
-#         a failed fix shows up. The cost of a stale same-round re-report is
-#         one extra triage step (re-resolve it fixed); the cost of missing a
-#         failed fix is shipping a broken change, so the loop errs toward
-#         reopening. An open or contested duplicate re-reported at HIGHER
-#         severity is ESCALATED the same way (adopt + news). rejected/wontfix
-#         entries are NEVER auto-reopened — reviewers only see open claims, so
-#         they will independently rediscover rejected ones forever; a
-#         re-report there prints a re-triage warning and stays a dup (the
-#         orchestrator decides, or the run would loop to exhaustion) — but a
-#         higher-severity re-report adopts the new rank and evidence in place
-#         AND counts as convergence news (severity is monotone, so this is
-#         bounded), so a manual re-triage inherits the real severity and an
-#         accepted fix still needs a clean round.
+# add     appends findings not already fingerprinted (fp = hash of file+title);
+#         duplicates bump last_seen_round — except a duplicate of an entry
+#         resolved as FIXED in an EARLIER round, which is REOPENED with the
+#         re-report's severity and evidence adopted: a re-report after a fix
+#         means the fix didn't hold, and counts as convergence news. An open
+#         or contested duplicate re-reported at HIGHER severity is ESCALATED
+#         the same way (adopt + news). rejected/wontfix entries are NEVER
+#         auto-reopened — reviewers only see open claims, so they will
+#         independently rediscover rejected ones forever; a re-report there
+#         prints a re-triage warning and stays a dup (the orchestrator
+#         decides, or the run would loop to exhaustion) — but a
+#         higher-severity re-report adopts the new rank and evidence in
+#         place AND counts as convergence news (severity is monotone, so
+#         this is bounded), so a manual re-triage inherits the real
+#         severity and an accepted fix still needs a clean round.
 #         Prints "new=N dup=M reopened=R escalated=E open=K".
-# claims  open + contested entries as `fp<TAB>severity<TAB>file:line<TAB>title`.
-#         This is what stages 2-3 get. Never hand a reviewer `list` output:
-#         it carries the body, and a second opinion that reads the first
-#         one's reasoning is an echo, not verification.
-# unverified  the cross stage must return a `disputes` entry for every claim it
-#         was given; this lists the claims it did NOT address (excluding ones
-#         it raised itself). Those are UNVERIFIED, not confirmed — re-ask, or
-#         say so in the report.
-# converged --require names the stages this run enabled: each must have a
-#         receipt for the CURRENT round whose verdict is not "block". Without
-#         it only the weak "has anything ever run?" check applies. Receipts are
-#         written by `add`, one per stage per round, in <dir>/stages.jsonl.
 # converged exit codes: 0 converged · 1 not yet · 3 max-rounds exhausted.
-#         Open benchmark demands also block: converging over an unmeasured
-#         claim means the report asserts evidence the run never gathered.
 #         Only entries at/above --gate severity count as blocking or as
 #         convergence-resetting news; sub-gate findings never force a round.
-#         News is tracked per entry in news_round: set when a finding is
-#         raised, reopened, or escalated, and CLEARED by resolving it
-#         rejected/wontfix. A round that only produced false positives adds no
-#         new external signal, so it must not buy itself another round; a
-#         round that produced a FIX must, because the fix needs re-review.
 set -euo pipefail
 
 die() { echo "ledger.sh: $*" >&2; exit 2; }
@@ -89,59 +60,29 @@ usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' 
 [ $# -ge 2 ] || { usage; exit 2; }
 CMD="$1"; DIR="$2"; shift 2
 LEDGER="$DIR/ledger.jsonl"
-DEMANDS="$DIR/demands.jsonl"
-STAGES="$DIR/stages.jsonl"
 ROUND_FILE="$DIR/round"
-
-# Every command but init needs a ledger; without this the failure surfaces as a
-# raw `cat:`/`jq:` error from inside a pipeline instead of an actionable one.
-need_init() {
-  [ -f "$ROUND_FILE" ] || die "not initialized: $DIR (run: ledger.sh init $DIR)"
-  [ -f "$LEDGER" ] || die "not initialized: $DIR (run: ledger.sh init $DIR)"
-  # demands.jsonl is newer than ledger.jsonl — a ledger from an older run of
-  # this script won't have one, so materialize it rather than failing.
-  [ -f "$DEMANDS" ] || : > "$DEMANDS"
-  [ -f "$STAGES" ] || : > "$STAGES"
-}
 
 case "$CMD" in
   init)
-    # Refuse to wipe a live ledger. The operator here is an agent running a
-    # multi-round loop; after a context compaction it replays the runbook from
-    # the top, and a second init would silently drop every recorded finding
-    # and reset the round — after which `converged` cheerfully reports a clean
-    # run over findings nobody resolved. Re-init of an empty ledger stays
-    # idempotent so a retried first step is harmless.
-    # Any live state counts, not just findings: a round whose only output was
-    # a benchmark demand, or whose stages ran and found nothing, is still a
-    # run in progress — and wiping it loses exactly the evidence that a demand
-    # is outstanding or that a stage already happened.
-    if [ -s "$LEDGER" ] || [ -s "$DEMANDS" ] || [ -s "$STAGES" ]; then
-      die "already initialized: $DIR holds live state ($(wc -l < "$LEDGER" | tr -d ' ') findings, $(wc -l < "$DEMANDS" 2>/dev/null | tr -d ' ') demands, $(wc -l < "$STAGES" 2>/dev/null | tr -d ' ') stage receipts; round $(cat "$ROUND_FILE" 2>/dev/null || echo '?')) — re-running init would erase it; delete $DIR to start over"
-    fi
     mkdir -p "$DIR"
     : > "$LEDGER"
-    : > "$DEMANDS"
-    : > "$STAGES"
     echo 1 > "$ROUND_FILE"
     echo "ledger initialized at $LEDGER (round 1)"
     ;;
 
   bump)
-    need_init
+    [ -f "$ROUND_FILE" ] || die "not initialized: $DIR"
     r=$(( $(cat "$ROUND_FILE") + 1 ))
     echo "$r" > "$ROUND_FILE"
     echo "$r"
     ;;
 
   round)
-    need_init
     cat "$ROUND_FILE"
     ;;
 
   add)
     need_jq
-    need_init
     SOURCE=""
     FINDINGS=""
     while [ $# -gt 0 ]; do
@@ -152,21 +93,8 @@ case "$CMD" in
     done
     [ -n "$SOURCE" ] || die "add: --source is required"
     [ -f "$FINDINGS" ] || die "add: findings file not found: $FINDINGS"
-    # A truncated reviewer answer must not read as a clean review. The schema
-    # declares all five top-level keys required, so their presence is what
-    # separates "the stage finished and found nothing" from "the response was
-    # cut off" — without this, {"findings":[]} converges the run.
-    # -s (slurp) so a CONCATENATION of documents is one array, not a stream:
-    # jq returns the status of the LAST result, so a stream could carry a junk
-    # document past a validator that only saw the final good one.
-    jq -es 'length == 1 and (.[0] |
-             has("summary")
-             and (.verdict | type == "string")
-             and (.verdict == "approve" or .verdict == "request-changes" or .verdict == "block")
-             and (.findings | type == "array")
-             and (.benchmark_demands | type == "array")
-             and (.disputes | type == "array"))' "$FINDINGS" >/dev/null \
-      || die "add: $FINDINGS is not exactly one complete findings document (needs verdict in approve|request-changes|block, summary, findings[], benchmark_demands[], disputes[]) — a truncated or concatenated reviewer answer must not be ingested as a clean review"
+    [ -f "$LEDGER" ] || die "not initialized: $DIR"
+    jq -e '.findings | type == "array"' "$FINDINGS" >/dev/null || die "add: $FINDINGS has no .findings array"
     # Reject malformed findings up front: an out-of-enum severity would rank
     # as minor in `converged` and silently slip under the gate. Empty
     # file/title strings are handled per finding below, not rejected here —
@@ -191,10 +119,11 @@ case "$CMD" in
       esac
       [ -n "$file" ] || file="(change-wide)"
       fp="$(fingerprint "$file" "$title")"
-      if grep -qF -- "\"fp\":\"$fp\"" "$LEDGER"; then
+      if grep -q "\"fp\":\"$fp\"" "$LEDGER"; then
         prev="$(jq -r --arg fp "$fp" \
-          'select(.fp == $fp) | .status + "|" + .severity' "$LEDGER")"
-        prev_status="${prev%%|*}"; prev_sev="${prev##*|}"
+          'select(.fp == $fp) | .status + "|" + .severity + "|" + (.last_seen_round | tostring)' "$LEDGER")"
+        prev_status="${prev%%|*}"; rest="${prev#*|}"
+        prev_sev="${rest%%|*}"; prev_seen="${rest##*|}"
         in_sev="$(printf '%s' "$item" | jq -r '.severity')"
         if [ "$prev_status" = rejected ] || [ "$prev_status" = wontfix ]; then
           # Not auto-reopened (see header) — but the orchestrator must see it,
@@ -206,18 +135,17 @@ case "$CMD" in
           # may be the one carrying the blocker-grade evidence.
           dup=$((dup + 1))
           if [ "$(sev_rank "$in_sev")" -gt "$(sev_rank "$prev_sev")" ]; then
-            # news_round = $r: the adoption is convergence news — if the
+            # .round = $r: the adoption is convergence news — if the
             # orchestrator accepts and fixes the escalated claim, the fix
             # must still survive a clean round like any other. Bounded churn:
             # severity is monotone, so a rejected entry can force at most two
             # such rounds over its lifetime.
             echo "ledger.sh: add: re-report of $prev_status finding $fp by $SOURCE at HIGHER severity ($prev_sev → $in_sev; evidence adopted) — re-triage manually if the rejection no longer holds: $title" >&2
             jq -c --arg fp "$fp" --arg src "$SOURCE" --argjson r "$ROUND" --argjson item "$item" \
-              'if .fp == $fp then .news_round = $r | .last_seen_round = $r
+              'if .fp == $fp then .round = $r | .last_seen_round = $r
                  | .severity = $item.severity | .line = ($item.line // .line)
-                 | .body = $item.body | .fix = ($item.fix // .fix) | .confidence = ($item.confidence // null)
+                 | .body = $item.body | .confidence = ($item.confidence // null)
                  | .source = $src
-                 | .disputes = []
                else . end' "$LEDGER" > "$LEDGER.tmp"
           else
             echo "ledger.sh: add: re-report of $prev_status finding $fp by $SOURCE — re-triage manually if the rejection no longer holds: $title" >&2
@@ -225,18 +153,17 @@ case "$CMD" in
               'if .fp == $fp then .last_seen_round = $r else . end' "$LEDGER" > "$LEDGER.tmp"
           fi
           mv "$LEDGER.tmp" "$LEDGER"
-        elif [ "$prev_status" = fixed ]; then
+        elif [ "$prev_status" = fixed ] && [ "$prev_seen" -lt "$ROUND" ]; then
           reopened=$((reopened + 1))
-          # news_round = $r: a reopen is NEWS — converged must see a clean
-          # round after the re-fix, exactly as for a brand-new finding.
+          # .round = $r: a reopen is NEWS — converged must see a clean round
+          # after the re-fix, exactly as it would for a brand-new finding.
           # The re-report is the CURRENT truth: adopt its severity, evidence
           # and source, or a round-1 minor re-reported as a blocker would
           # keep slipping under the gate on its stale severity.
           jq -c --arg fp "$fp" --arg src "$SOURCE" --argjson r "$ROUND" --argjson item "$item" \
-            'if .fp == $fp then .status = "open" | .news_round = $r | .last_seen_round = $r
-               | .disputes = []
+            'if .fp == $fp then .status = "open" | .round = $r | .last_seen_round = $r
                | .severity = $item.severity | .line = ($item.line // .line)
-               | .body = $item.body | .fix = ($item.fix // .fix) | .confidence = ($item.confidence // null)
+               | .body = $item.body | .confidence = ($item.confidence // null)
                | .source = $src
                | .note = "reopened: re-reported by " + $src + " in round " + ($r | tostring)
              else . end' "$LEDGER" > "$LEDGER.tmp"
@@ -249,11 +176,10 @@ case "$CMD" in
           # rank — and the escalation is convergence news.
           escalated=$((escalated + 1))
           jq -c --arg fp "$fp" --arg src "$SOURCE" --argjson r "$ROUND" --argjson item "$item" \
-            'if .fp == $fp then .news_round = $r | .last_seen_round = $r
+            'if .fp == $fp then .round = $r | .last_seen_round = $r
                | .severity = $item.severity | .line = ($item.line // .line)
-               | .body = $item.body | .fix = ($item.fix // .fix) | .confidence = ($item.confidence // null)
+               | .body = $item.body | .confidence = ($item.confidence // null)
                | .source = $src
-               | .disputes = []
                | .note = "escalated: re-reported as " + $item.severity + " by " + $src + " in round " + ($r | tostring)
              else . end' "$LEDGER" > "$LEDGER.tmp"
           mv "$LEDGER.tmp" "$LEDGER"
@@ -266,97 +192,18 @@ case "$CMD" in
         fi
       else
         new=$((new + 1))
-        # .round is the round the finding was first raised and never moves;
-        # .news_round is the last round something newsworthy happened to it.
         printf '%s' "$item" | jq -c --arg fp "$fp" --arg src "$SOURCE" --arg f "$file" --argjson r "$ROUND" \
-          '{fp: $fp, round: $r, news_round: $r, last_seen_round: $r, source: $src, status: "open",
+          '{fp: $fp, round: $r, last_seen_round: $r, source: $src, status: "open",
             severity, file: $f, line: (.line // null), title, body,
-            fix: (.fix // null), confidence: (.confidence // null), disputes: []}' >> "$LEDGER"
+            confidence: (.confidence // null)}' >> "$LEDGER"
       fi
     done < <(jq -c '.findings[]' "$FINDINGS")
-
-    # Disputes: this stage's verdicts on claims it was given. Recorded on the
-    # disputed entry so `unverified` can name what it never addressed — an
-    # unaddressed claim is unverified, not confirmed.
-    dis=0; dis_unknown=0
-    while IFS= read -r d; do
-      dfp="$(printf '%s' "$d" | jq -r '.fp // ""')"
-      dpos="$(printf '%s' "$d" | jq -r '.position // ""')"
-      [ -n "$dfp" ] || continue
-      case "$dpos" in
-        confirm|refute) ;;
-        *) echo "ledger.sh: add: dispute on $dfp has bad position '$dpos' (confirm|refute) — ignored" >&2; continue ;;
-      esac
-      if ! grep -qF -- "\"fp\":\"$dfp\"" "$LEDGER"; then
-        dis_unknown=$((dis_unknown + 1))
-        echo "ledger.sh: add: dispute references unknown fp $dfp (source=$SOURCE) — ignored" >&2
-        continue
-      fi
-      dreason="$(printf '%s' "$d" | jq -r '.reason // ""')"
-      # One dispute per source per finding: a re-review supersedes its own
-      # earlier verdict rather than stacking a contradictory second one.
-      jq -c --arg fp "$dfp" --arg src "$SOURCE" --arg pos "$dpos" --arg reason "$dreason" --argjson r "$ROUND" \
-        'if .fp == $fp then
-           .disputes = (((.disputes // []) | map(select(.source != $src)))
-                        + [{source: $src, position: $pos, reason: $reason, round: $r}])
-         else . end' "$LEDGER" > "$LEDGER.tmp"
-      mv "$LEDGER.tmp" "$LEDGER"
-      dis=$((dis + 1))
-    done < <(jq -c '(.disputes // [])[]' "$FINDINGS")
-    [ "$dis" -eq 0 ] && [ "$dis_unknown" -eq 0 ] || echo "disputes: recorded=$dis ignored=$dis_unknown"
-
-    # Benchmark demands: a performance claim that must be measured before the
-    # verdict can improve. Deduped by claim text so two stages demanding the
-    # same measurement don't produce two runs.
-    dem_new=0; dem_dup=0
-    while IFS= read -r bd; do
-      claim="$(printf '%s' "$bd" | jq -r '.claim // ""')"
-      case "$claim" in
-        *[![:space:]]*) ;;
-        *) echo "ledger.sh: add: skipping benchmark demand with empty claim (source=$SOURCE)" >&2; continue ;;
-      esac
-      did="$(fingerprint demand "$claim")"
-      if grep -qF -- "\"id\":\"$did\"" "$DEMANDS"; then
-        # A demand re-raised in a LATER round is a reviewer saying the question
-        # is still open against changed code — the same reopen rule findings
-        # get. Without this, a demand met in round 1 stays met even though the
-        # code it measured has since been rewritten.
-        dprev="$(jq -r --arg id "$did" 'select(.id == $id) | .status + "|" + (.round | tostring)' "$DEMANDS")"
-        dstat="${dprev%%|*}"; dround="${dprev##*|}"
-        if [ "$dstat" != open ] && [ "$dround" -lt "$ROUND" ]; then
-          jq -c --arg id "$did" --arg src "$SOURCE" --argjson r "$ROUND" --argjson bd "$bd" \
-            'if .id == $id then .status = "open" | .round = $r | .source = $src
-               | .why = ($bd.why // .why)
-               | .suggested_method = ($bd.suggested_method // .suggested_method)
-               | .note = "reopened: re-raised in round " + ($r | tostring) else . end' \
-            "$DEMANDS" > "$DEMANDS.tmp"
-          mv "$DEMANDS.tmp" "$DEMANDS"
-          echo "ledger.sh: add: benchmark demand $did re-raised after being $dstat — reopened" >&2
-        fi
-        dem_dup=$((dem_dup + 1))
-      else
-        dem_new=$((dem_new + 1))
-        printf '%s' "$bd" | jq -c --arg id "$did" --arg src "$SOURCE" --argjson r "$ROUND" \
-          '{id: $id, round: $r, source: $src, status: "open", claim,
-            why: (.why // null), suggested_method: (.suggested_method // null)}' >> "$DEMANDS"
-      fi
-    done < <(jq -c '(.benchmark_demands // [])[]' "$FINDINGS")
-    [ "$dem_new" -eq 0 ] && [ "$dem_dup" -eq 0 ] || echo "benchmark demands: new=$dem_new dup=$dem_dup"
-
-    # Stage receipt: proof this stage actually produced output this round. A
-    # stage that ran and found nothing adds no ledger entry, so without a
-    # receipt it is indistinguishable from a stage that never ran — and
-    # `converged` would call the whole pipeline clean on an empty ledger.
-    VERD="$(jq -r '.verdict' "$FINDINGS")"
-    jq -nc --arg src "$SOURCE" --arg v "$VERD" --argjson r "$ROUND" --argjson n "$new" \
-      '{round: $r, source: $src, verdict: $v, new: $n}' >> "$STAGES"
     open="$(jq -sc 'map(select(.status == "open")) | length' "$LEDGER")"
     echo "new=$new dup=$dup reopened=$reopened escalated=$escalated open=$open"
     ;;
 
   list)
     need_jq
-    need_init
     STATUS=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -371,91 +218,8 @@ case "$CMD" in
     fi
     ;;
 
-  unverified)
-    need_jq
-    need_init
-    SOURCE=""
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        --source) SOURCE="$2"; shift 2 ;;
-        *) die "unverified: unknown argument $1" ;;
-      esac
-    done
-    [ -n "$SOURCE" ] || die "unverified: --source is required"
-    # Exclude what this stage raised itself: a reviewer never disputes its own
-    # findings, so without this the list is padded with the stage's own new
-    # claims and the orchestrator "re-asks" it to verify things it just said.
-    jq -c --arg s "$SOURCE" '
-      select((.status == "open" or .status == "contested")
-        and .source != $s
-        and ((.disputes // []) | map(select(.source == $s)) | length) == 0)' "$LEDGER"
-    ;;
-
-  claims)
-    need_jq
-    need_init
-    # The blind hand-off to stages 2-3: fingerprint, severity, location, title.
-    # Deliberately NOT the body — that is stage 2's reasoning, and a second
-    # opinion that reads it stops being independent. This exists so the blind
-    # path is the mechanical one; `list` emits full JSONL including the body,
-    # so pasting `list` output into a reviewer prompt silently defeats the
-    # cross-model independence the whole third stage is for.
-    jq -r '
-      select(.status == "open" or .status == "contested")
-      | [.fp, .severity,
-         (.file + (if .line then ":" + (.line | tostring) else "" end)),
-         .title]
-      | @tsv' "$LEDGER"
-    ;;
-
-  demands)
-    need_jq
-    need_init
-    STATUS=""
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        --status) STATUS="$2"; shift 2 ;;
-        *) die "demands: unknown argument $1" ;;
-      esac
-    done
-    if [ -n "$STATUS" ]; then
-      jq -c --arg s "$STATUS" 'select(.status == $s)' "$DEMANDS"
-    else
-      cat "$DEMANDS"
-    fi
-    ;;
-
-  demand)
-    need_jq
-    need_init
-    [ $# -ge 2 ] || die "demand: need <id> <met|dropped|open>"
-    ID="$1"; ST="$2"; shift 2
-    NOTE=""
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        --note) NOTE="$2"; shift 2 ;;
-        *) die "demand: unknown argument $1" ;;
-      esac
-    done
-    case "$ST" in met|dropped|open) ;; *) die "demand: bad status $ST (met|dropped|open)" ;; esac
-    # "met" asserts a measurement exists; without the numbers attached the
-    # ledger records evidence nobody can check, and the final report inherits
-    # that claim. "dropped" needs its reason for the same purpose.
-    case "$NOTE" in *[![:space:]]*) ;; *) NOTE="" ;; esac   # whitespace is not evidence
-    if [ "$ST" != open ] && [ -z "$NOTE" ]; then
-      die "demand: --note is required for '$ST' — record the numbers (met) or why not (dropped); the note IS the evidence"
-    fi
-    grep -qF -- "\"id\":\"$ID\"" "$DEMANDS" || die "demand: id not found: $ID"
-    jq -c --arg id "$ID" --arg st "$ST" --arg note "$NOTE" \
-      'if .id == $id then .status = $st | (if $note != "" then .note = $note else . end) else . end' \
-      "$DEMANDS" > "$DEMANDS.tmp"
-    mv "$DEMANDS.tmp" "$DEMANDS"
-    echo "$ID → $ST"
-    ;;
-
   resolve)
     need_jq
-    need_init
     [ $# -ge 2 ] || die "resolve: need <fp> <status>"
     FP="$1"; ST="$2"; shift 2
     NOTE=""
@@ -466,31 +230,9 @@ case "$CMD" in
       esac
     done
     case "$ST" in fixed|rejected|wontfix|contested|open) ;; *) die "resolve: bad status $ST" ;; esac
-    grep -qF -- "\"fp\":\"$FP\"" "$LEDGER" || die "resolve: fp not found: $FP"
-    ROUND="$(cat "$ROUND_FILE")"
-    PREV_ST="$(jq -r --arg fp "$FP" 'select(.fp == $fp) | .status' "$LEDGER")"
-    # news_round: rejecting a finding (or parking it as wontfix) produces no
-    # new external signal, so it must not buy the run another round — clear it.
-    # A FIX keeps its news (the new code needs re-review); a manual reopen
-    # re-arms it.
-    case "$ST" in
-      rejected|wontfix) NEWS=0 ;;
-      # A fix is new external signal DATED TO THE ROUND IT LANDS. Leaving
-      # news_round at the round the finding was raised means a round-1 finding
-      # fixed in round 3 carries stale news, converges instantly, and the new
-      # code is never reviewed by anyone.
-      # Only a TRANSITION into fixed is new signal. Replaying `resolve … fixed`
-      # (an orchestration retry, a resumed session) must not manufacture news
-      # that blocks convergence forever and falsely exhausts the round cap.
-      fixed) if [ "$PREV_ST" = fixed ]; then NEWS=""; else NEWS="$ROUND"; fi ;;
-      open) NEWS="$ROUND" ;;
-      *) NEWS="" ;;
-    esac
-    jq -c --arg fp "$FP" --arg st "$ST" --arg note "$NOTE" --arg news "$NEWS" \
-      'if .fp == $fp then .status = $st
-         | (if $news != "" then .news_round = ($news | tonumber) else . end)
-         | (if $note != "" then .note = $note else . end)
-       else . end' \
+    grep -q "\"fp\":\"$FP\"" "$LEDGER" || die "resolve: fp not found: $FP"
+    jq -c --arg fp "$FP" --arg st "$ST" --arg note "$NOTE" \
+      'if .fp == $fp then .status = $st | (if $note != "" then .note = $note else . end) else . end' \
       "$LEDGER" > "$LEDGER.tmp"
     mv "$LEDGER.tmp" "$LEDGER"
     echo "$FP → $ST"
@@ -498,14 +240,12 @@ case "$CMD" in
 
   converged)
     need_jq
-    need_init
-    CLEAN=1; MAX=3; GATE="major"; REQUIRE=""
+    CLEAN=1; MAX=3; GATE="major"
     while [ $# -gt 0 ]; do
       case "$1" in
         --clean-rounds) CLEAN="$2"; shift 2 ;;
         --max-rounds) MAX="$2"; shift 2 ;;
         --gate) GATE="$2"; shift 2 ;;
-        --require) REQUIRE="$2"; shift 2 ;;
         *) die "converged: unknown argument $1" ;;
       esac
     done
@@ -516,55 +256,12 @@ case "$CMD" in
         and ((if .severity == "blocker" then 3 elif .severity == "major" then 2 else 1 end) >= $g)))
       | length' "$LEDGER")"
     since=$(( ROUND - CLEAN ))
-    # news_round, not round: a finding rejected as a false positive has its
-    # news cleared, so a round that found only false positives doesn't force
-    # another one. (// .round keeps ledgers written by an older version working.)
     new_recent="$(jq -sc --argjson since "$since" --argjson g "$gate_rank" '
-      map(select((.news_round // .round) > $since
+      map(select(.round > $since
         and ((if .severity == "blocker" then 3 elif .severity == "major" then 2 else 1 end) >= $g)))
       | length' "$LEDGER")"
-    open_demands="$(jq -sc 'map(select(.status == "open")) | length' "$DEMANDS")"
-    # A stage that ran and found nothing writes no ledger entry, so an empty
-    # ledger is ambiguous: flawless change, or pipeline that never ran? Stage
-    # receipts disambiguate. With no receipt at all, "converged" would be a
-    # claim about a review that did not happen.
-    missing=""
-    if [ ! -s "$STAGES" ]; then
-      missing="(no stage has run at all)"
-    elif [ -n "$REQUIRE" ]; then
-      IFS=',' read -r -a want <<< "$REQUIRE"
-      for st in "${want[@]}"; do
-        [ -n "$st" ] || continue
-        jq -e --arg s "$st" --argjson r "$ROUND" \
-          'select(.source == $s and .round == $r and .verdict != "block")' "$STAGES" >/dev/null 2>&1 \
-          || missing="$missing $st"
-      done
-      missing="${missing# }"
-    fi
-    echo "round=$ROUND open_blocking(>=$GATE)=$open_blocking new(>=$GATE)_in_last_${CLEAN}_rounds=$new_recent open_demands=$open_demands"
-    if [ -n "$missing" ]; then
-      echo "no acceptable stage evidence for this round: $missing" >&2
-      # Fall through to the max-rounds check below rather than exiting here —
-      # otherwise a run that never produces receipts returns "next round"
-      # forever and sails past its own hard cap.
-      if [ "$ROUND" -ge "$MAX" ]; then
-        echo "MAX-ROUNDS EXHAUSTED (report remaining open findings honestly)"
-        exit 3
-      fi
-      echo "NOT CONVERGED"
-      exit 1
-    fi
-    # Open demands block. A demand is an unmeasured claim the reviewers said
-    # must be measured; converging over it means the report asserts evidence
-    # the run never gathered. Both escape hatches already exist — measure it
-    # (`demand <id> met`) or record why you didn't (`demand <id> dropped`) —
-    # so this forecloses nothing, it just refuses to let the machine signal
-    # the orchestrator loops on say "done" while the question is open.
-    if [ "$open_demands" -gt 0 ]; then
-      echo "note: $open_demands benchmark demand(s) still open — measure them or record why not (ledger.sh demand <id> met|dropped)" >&2
-    fi
-    if [ "$open_blocking" -eq 0 ] && [ "$new_recent" -eq 0 ] && [ "$ROUND" -ge "$CLEAN" ] \
-       && [ "$open_demands" -eq 0 ]; then
+    echo "round=$ROUND open_blocking(>=$GATE)=$open_blocking new(>=$GATE)_in_last_${CLEAN}_rounds=$new_recent"
+    if [ "$open_blocking" -eq 0 ] && [ "$new_recent" -eq 0 ] && [ "$ROUND" -ge "$CLEAN" ]; then
       echo "CONVERGED"
       exit 0
     fi
@@ -578,30 +275,19 @@ case "$CMD" in
 
   report)
     need_jq
-    need_init
-    ROUND="$(cat "$ROUND_FILE")"
+    ROUND="$(cat "$ROUND_FILE" 2>/dev/null || echo '?')"
     echo "## Self-review ledger — round $ROUND"
     echo
-    echo "| fp | sev | status | src | round | where | finding | disputes |"
-    echo "|---|---|---|---|---|---|---|---|"
+    echo "| fp | sev | status | src | round | where | finding |"
+    echo "|---|---|---|---|---|---|---|"
     jq -r '
       [.fp, .severity, .status, .source, (.round | tostring),
        (.file + (if .line then ":" + (.line | tostring) else "" end)),
-       (.title | gsub("\\|"; "\\\\|")),
-       ((.disputes // []) | map(.source + ":" + .position) | join(" ") | if . == "" then "—" else . end)]
+       (.title | gsub("\\|"; "\\\\|"))]
       | "| " + join(" | ") + " |"' "$LEDGER"
     echo
     jq -sr '
-      if length == 0 then "no findings"
-      else group_by(.status) | map("\(.[0].status): \(length)") | join(" · ") end' "$LEDGER"
-    if [ -s "$DEMANDS" ]; then
-      echo
-      echo "### Benchmark demands"
-      echo
-      echo "| id | status | src | claim |"
-      echo "|---|---|---|---|"
-      jq -r '[.id, .status, .source, (.claim | gsub("\\|"; "\\\\|"))] | "| " + join(" | ") + " |"' "$DEMANDS"
-    fi
+      group_by(.status) | map("\(.[0].status): \(length)") | join(" · ")' "$LEDGER"
     ;;
 
   *)

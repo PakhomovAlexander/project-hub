@@ -121,6 +121,7 @@ fresh; printf '\n[missing](docs/nope.md)\n' >> "$ONE/README.md"      ; must_fail
 fresh; printf '\n[r](../repos/acme/README.md)\n' >> "$ONE/docs/plan.md"; must_fail "a link into repos/"
 fresh; chmod -x "$ONE/scripts/verify.sh"                             ; must_fail "a non-exec script"
 fresh; find "$ONE/.agents/skills" -name '*.sh' -exec chmod -x {} +   ; must_fail "a non-exec skill script"
+fresh; find "$ONE/tools" -name '*.sh' -exec chmod -x {} +            ; must_fail "a non-exec tools script"
 fresh; rm "$ONE/.hub-meta.yml"                                       ; must_fail "missing provenance"
 fresh; printf 'throw new Error("failing assertion: planted")\n' \
   > "$ONE/tests/smoke-planted.mjs"                                   ; must_fail "a failing workflow smoke test"

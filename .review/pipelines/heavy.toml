@@ -1,0 +1,140 @@
+# The template repo's own heavy review — the kernel it ships, run against itself.
+#
+# This is NOT template/.review/pipelines/heavy.toml. That file is scaffolded content: the
+# pipeline a GENERATED hub gets. This one reviews this repository, so its gate runs this
+# repository's tests instead (`scripts/verify-hub.sh` is deliberately not one of them — it
+# verifies a generated hub, and the template legitimately still holds {{TOKEN}} placeholders).
+#
+# The reviewer packages are copies of the shipped ones, not links: a package registry is the
+# directory beside its pipeline, and the loader refuses a symlink inside a package. They may
+# drift from template/.review/reviewers/ on purpose — this repo's review is its own.
+# Re-lock after editing either:
+#   cd tools/review-kernel && cargo run -p review-config --example lock -- \
+#     ../../.review/reviewers architecture performance > ../../.review/review.lock
+version = 1
+
+# ---------------------------------------------------------------- gate checks
+# Programs and options are trusted literals. A value derived from the change under review
+# must be marked `untrusted`, and can then never occupy an option position.
+[[checks]]
+name = "markdownlint"
+program = "npx"
+args = [
+  { value = "--yes" },
+  { value = "markdownlint-cli2@0.22.1" },
+  { value = "--config" },
+  { value = "template/.markdownlint-cli2.jsonc" },
+  { value = "**/*.md" },
+]
+
+# The risky-command hook's regression table.
+[[checks]]
+name = "hook-table"
+program = "bash"
+args = [{ value = "tests/hook-test.sh" }]
+
+# Every shipped script, the same set CI checks.
+[[checks]]
+name = "shellcheck"
+program = "bash"
+args = [
+  { value = "-c" },
+  { value = "shellcheck scripts/verify-hub.sh tests/*.sh template/scripts/*.sh template/.claude/hooks/*.sh template/.agents/skills/*/scripts/*.sh template/tools/review-kernel/fixtures/synthetic/generate.sh" },
+]
+
+# Two checks CI runs are deliberately NOT here, because a gate sandbox cannot host them:
+#
+# - tests/smoke-scaffold.sh and tests/smoke-update.sh scaffold a hub with `cp -a` (SETUP.md
+#   §5) and then substitute tokens in place. The gate sandbox is read-only, `-a` preserves
+#   that, and `perl -i` cannot write a temp file into a read-only directory. Observed, not
+#   assumed: the first run of this pipeline failed exactly this way on all 583 files.
+# - The Rust workspace (`make -C template review-kernel`). Cargo in a sandbox gets a
+#   redirected HOME, so every attempt would refetch the whole registry.
+#
+# Both stay gated in .github/workflows/template-ci.yml, which is where they belong: they need
+# a writable tree and a warm toolchain, and neither is a property this gate can supply.
+
+# ---------------------------------------------------------------------- nodes
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = ["decision"]
+
+# The campaign's prior findings, delivered to reviewers through a wired port rather than from
+# ambient kernel state. In round 1 it emits an empty set; from round 2 on it carries what the
+# earlier rounds found, and each reviewer is asked to confirm, dispute, or drop each one.
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = ["findings"]
+
+[[nodes]]
+id = "architecture"
+kind = "reviewer"
+inputs = ["gate", "prior_findings"]
+outputs = ["result"]
+gated_by = "gate"
+package = "architecture"
+
+[[nodes]]
+id = "performance"
+kind = "reviewer"
+inputs = ["gate", "prior_findings"]
+outputs = ["result"]
+gated_by = "gate"
+package = "performance"
+
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = ["architecture", "performance"]
+outputs = ["reports"]
+
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["findings"]
+
+# ---------------------------------------------------------------------- edges
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "architecture", port = "prior_findings" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "performance", port = "prior_findings" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "architecture", port = "gate" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "performance", port = "gate" }
+
+[[edges]]
+from = { node = "architecture", port = "result" }
+to = { node = "gather", port = "architecture" }
+
+[[edges]]
+from = { node = "performance", port = "result" }
+to = { node = "gather", port = "performance" }
+
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+
+# -------------------------------------------------------------------- budgets
+# Tokens; a run that exhausts finishes in-flight attempts and reports incomplete; a fenced
+# attempt charges.
+[budgets]
+unit = "tokens"
+attempt = 300000
+run = 2000000
+
+# ---------------------------------------------------------------- convergence
+[convergence]
+clean_rounds = 1
+max_rounds = 3
+gate = "major"

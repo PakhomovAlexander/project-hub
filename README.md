@@ -26,10 +26,11 @@ Most "AI in the repo" setups give the agent a `CLAUDE.md` and hope. A hub goes f
   deterministically loads the same rules *and* the glossary — one source of truth, no drift.
 - **`.agents/skills/`** — the hub's processes as executable skills (open Agent Skills
   format): `/adr`, `/tracker`, `/resume`, `/onboard-repo`, `/verify`, `/update-hub`,
-  `/self-review-heavy` (a staged multi-model pre-PR review pipeline: local gate → deep
-  architecture/perf review → cross-model second opinion, iterated to convergence on a
-  findings ledger, with benchmark demands for performance claims), and `/explain-asci`
-  (one verified worked example traced through the actual implementation).
+  `/self-review-heavy` (a heavy pre-PR review driven by the Review Kernel in
+  `tools/review-kernel/`: gate checks, sandboxed model reviewers, budgets, and an
+  append-only event log reduced to a findings ledger that must converge — see
+  `docs/self-review-heavy.md`), and `/explain-asci` (one verified worked example traced
+  through the actual implementation).
 - **`docs/adr/`** — decisions recorded with options + consequences, superseding over time.
 - **`docs/tracker.md`** — a living status board: what's true *right now*, dated — and a
   session-start hook that briefs every new session on it (and flags it when stale).
@@ -98,7 +99,9 @@ your-project-hub/
 ├── repos.manifest         # the list of repos this hub coordinates
 ├── .agents/skills/        # /adr /tracker /resume /verify /self-review-heavy /explain-asci …
 ├── .claude/               # permission lists, hooks (session brief, risky-cmd gate), agents/
-├── .github/workflows/     # docs CI: markdownlint + offline link check
+├── .review/               # /self-review-heavy's pipeline: gate checks, reviewer packages, lock
+├── tools/review-kernel/   # the Rust workspace behind it (pinned toolchain, committed lockfile)
+├── .github/workflows/     # CI: review kernel (fmt, clippy, tests, fixtures) + markdownlint + links
 ├── .markdownlint-cli2.jsonc # light, high-signal Markdown rules
 ├── docs/
 │   ├── index.md          # map of all docs

@@ -37,6 +37,8 @@ Map of everything in the hub.
 - [`issue-lifecycle.md`](issue-lifecycle.md) — how backlog items move.
 - [`parallel-agents.md`](parallel-agents.md) — run several agents over the hub at once,
   each in its own git worktree (`make worktree`).
+- [`self-review-heavy.md`](self-review-heavy.md) — the heavy pre-PR review: how a
+  kernel-driven round executes, a worked ledger example, and every configuration knob.
 
 ## Per-repo overviews
 

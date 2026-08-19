@@ -10,6 +10,17 @@
 # scratchpad (other agents: just mkdir it). Never tracked.
 /.scratch
 
+# Hub-owned Rust build output; Cargo.lock stays tracked.
+/tools/review-kernel/target/
+
+# Review Kernel campaign state — event logs and artifact stores for local review
+# runs. Run state, never repo content.
+/.review/runs/
+
 .DS_Store
 *.log
 *.tmp
+
+# ...except inside the frozen review fixtures: a bundle's check logs are evidence,
+# and a fixture that silently loses a file is not a fixture.
+!/tools/review-kernel/fixtures/**/*.log
