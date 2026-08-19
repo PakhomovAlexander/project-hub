@@ -24,5 +24,7 @@ The two imports above are binding: [`AGENTS.md`](AGENTS.md) is the **working agr
 - Skills: `/adr` · `/tracker` · `/resume` · `/onboard-repo` · `/verify` · `/update-hub` ·
   `/self-review-heavy` · `/explain-asci`, loaded from
   [`.agents/skills/`](.agents/skills/) via the `.claude/skills` link.
-  `/self-review-heavy`'s stage runners are the `srh-gate` and `srh-deep-reviewer`
-  agents in [`.claude/agents/`](.claude/agents/).
+  `/self-review-heavy` is kernel-driven: it invokes `reviewctl` from
+  [`tools/review-kernel/`](tools/review-kernel/) against the pipeline in
+  [`.review/`](.review/) — the human guide is
+  [`docs/self-review-heavy.md`](docs/self-review-heavy.md).

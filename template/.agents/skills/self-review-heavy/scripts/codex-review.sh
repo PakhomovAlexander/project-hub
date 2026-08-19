@@ -46,13 +46,6 @@ done
 if [ -z "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then echo "codex-review.sh: --prompt-file is required and must exist" >&2; exit 2; fi
 [ -n "$OUT" ] || { echo "codex-review.sh: --out is required" >&2; exit 2; }
 case "$MODE" in exec|review) ;; *) echo "codex-review.sh: unknown --mode $MODE (exec|review)" >&2; exit 2 ;; esac
-# Pin both paths to the caller's cwd before anything cds. Review mode opens
-# the prompt inside `( cd "$REPO" && … )`, so a relative --prompt-file would
-# resolve against the repo — a different file than the one just validated, or
-# nothing at all — while --out on the same line is opened by the parent.
-case "$PROMPT_FILE" in /*) ;; *) PROMPT_FILE="$PWD/$PROMPT_FILE" ;; esac
-case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
-case "$SCHEMA" in /*) ;; *) SCHEMA="$PWD/$SCHEMA" ;; esac
 command -v codex >/dev/null || { echo "codex-review.sh: codex CLI not found" >&2; exit 127; }
 
 if [ "$MODE" = "exec" ]; then

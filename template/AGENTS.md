@@ -146,7 +146,8 @@ command.
 Recurring workflows live as skills in [`.agents/skills/`](.agents/skills/) (open Agent
 Skills format; Claude Code reads the same files via the `.claude/skills` link): `/adr`,
 `/tracker`, `/resume`, `/onboard-repo`, `/verify`, `/update-hub`, `/self-review-heavy`
-(staged multi-model review of a substantial change, pre-PR — expensive, use deliberately),
+(kernel-driven heavy review of a substantial change, pre-PR — expensive, use deliberately;
+human guide in [`docs/self-review-heavy.md`](docs/self-review-heavy.md)),
 and `/explain-asci` (trace code with diagrams and one verified worked example). Prefer
 invoking them over improvising the same workflow from memory.
 

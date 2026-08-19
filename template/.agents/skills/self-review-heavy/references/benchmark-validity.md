@@ -13,18 +13,18 @@ bare "before 120 ms / after 105 ms" pair is inadmissible.
    stddev), never a single run. Close calls get more runs.
 3. **5% effect floor, ~10% noise ceiling.** |Δ median| under 5% is "no
    change", however it trends. If run-to-run noise exceeds ~10%, the
-   benchmark is *unstable* — fix the benchmark (longer workload, pinned
-   data, quieter machine); don't interpret it.
-4. **Counters over clocks when it's close.** On a small shared machine, wall
-   clock is noisy; prefer perf counters (instructions, cycles, cache misses)
-   and system-internal counters (items/bytes processed, CPU-time events) for
-   verdicts near the floor.
+   benchmark is *unstable* — fix the benchmark (longer query, pinned data,
+   quieter machine); don't interpret it.
+4. **Counters over clocks when it's close.** On a small shared VM, wall clock
+   is noisy; prefer perf counters (instructions, cycles, cache misses) and
+   engine ProfileEvents (rows/bytes read, CPU-time events) for verdicts near
+   the floor.
 5. **Result equivalence alongside speed.** The change must produce the same
-   answer: byte-identical output artifacts where the system has them,
-   identical query/computation results otherwise. A fast wrong answer is a
-   blocker, not a win.
-6. **Pinned recipe.** Dataset, sizes, settings, and workload list stated in
-   the report so anyone can reproduce the run. Start from the profile's
-   `benchmarks.recipe`.
-7. **0.1–1 s per measured operation.** Below that, scheduling jitter
-   dominates; far above, iterations are wasted.
+   answer: byte-identical part checksums for merge/storage changes, identical
+   query results for query changes. A fast wrong answer is a blocker, not a
+   win.
+6. **Pinned recipe.** Dataset, row counts, settings, and query list stated in
+   the report so anyone can reproduce the run. For the engine, start from the
+   profile's `benchmarks.recipe`.
+7. **0.1–1 s per measured query.** Below that, scheduling jitter dominates;
+   far above, iterations are wasted.

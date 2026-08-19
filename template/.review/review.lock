@@ -1,0 +1,9 @@
+version = 1
+
+[reviewers.architecture]
+version = "1.1.0"
+digest = "sha256:09fe1ab4f2426bd8366cb36dbc3f75735a298e53e8f958eecf8897d75726f012"
+
+[reviewers.performance]
+version = "1.1.0"
+digest = "sha256:3b53b5767cf779a926e93594debf08586e268162f024d4dea594220cded1169f"

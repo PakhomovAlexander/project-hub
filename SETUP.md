@@ -177,19 +177,16 @@ Work through the copied skeleton and make it real:
   duplicated here. (Single-repo: trim the linked-clones phrase from the guardrails bullet.)
 - **`.agents/skills/`** — the eight skills are generic; keep them as-is. Single-repo
   project: delete `onboard-repo/` (but keep `update-hub/` — it's how the hub takes
-  template upgrades later). `/self-review-heavy` is the heavy pre-PR review pipeline —
-  it needs `jq` (plus the codex CLI for its cross-model stage); wire a
-  `config/<repo>.yml` profile per repo when you adopt it (`config/_example.yml` shows
-  the shape); or drop it — delete the directory **and** its stage runners
-  `.claude/agents/srh-*.md`, recording both in `dropped:`. If the team has other
+  template upgrades later). `/self-review-heavy` is the heavy pre-PR review, driven by
+  the Review Kernel — the agent invokes `reviewctl` (built from `tools/review-kernel/`,
+  pinned Rust toolchain) against the pipeline in `.review/`; reviewer model and effort
+  are set per package in `.review/reviewers/<name>/reviewer.toml` (re-lock after edits —
+  see `docs/self-review-heavy.md`). It needs the `claude` CLI (and `codex` if a package
+  uses it). Or drop it — delete the skill directory, `.review/`, and
+  `tools/review-kernel/`, recording all three in `dropped:`. If the team has other
   recurring processes, add one skill per process (a directory + `SKILL.md`, `name`
   matching the directory). `/explain-asci` is documentation-only and needs no
   repo-specific configuration.
-- **`.claude/agents/`** — Claude Code subagent definitions that back a skill's stages
-  (`srh-gate`, `srh-deep-reviewer` for `/self-review-heavy`). They pin a model tier and
-  reasoning effort per stage, so leave them alone unless the hub wants different tiers.
-  Vendor-specific by nature: they're the Claude Code wiring for pipelines whose portable
-  half lives in `.agents/skills/`.
 - **`.claude/settings.json`** — resolve `{{CLONE_WORKSPACE}}` in
   `permissions.additionalDirectories` (single-repo: delete that key and the
   `make`/`repos.sh` entries in `permissions.allow`). Mirror the user's risky families into

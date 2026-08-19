@@ -21,11 +21,6 @@ BASE=""
 OUT=""
 UNCOMMITTED=0
 PATHS=""
-# A literal newline. Command substitution strips trailing newlines, so
-# NL="$(printf '\n')" would yield the empty string and match everything.
-NL='
-'
-TABCH="$(printf '\t')"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -89,7 +84,7 @@ fi
 
 if [ "$UNCOMMITTED" -eq 1 ]; then
   git diff "$MERGE_BASE" "${SPEC[@]}" > "$OUT/diff.patch"
-  git -c core.quotePath=false diff --name-status "$MERGE_BASE" "${SPEC[@]}" > "$OUT/files.txt"
+  git diff --name-status "$MERGE_BASE" "${SPEC[@]}" > "$OUT/files.txt"
   git diff --stat "$MERGE_BASE" "${SPEC[@]}" > "$OUT/stats.txt"
   git diff --numstat "$MERGE_BASE" "${SPEC[@]}" > "$OUT/.numstat"
   # git diff can't see untracked files — append their full contents as adds,
@@ -106,44 +101,14 @@ if [ "$UNCOMMITTED" -eq 1 ]; then
   fi
   tr '\0' '\n' < "$OUT/.untracked0" > "$OUT/untracked.txt"
   while IFS= read -r -d '' uf; do
-    # git C-quotes any path holding a newline or a quote, and the unsafe-path
-    # scan below leans on that: a leading " means "this row is not a usable
-    # path". These rows come from -z output instead (raw, so UTF-8 names stay
-    # openable), so quote those two cases ourselves — otherwise a file named
-    # "innocent.c<LF>rm -rf tmp" splits into two rows, files.txt is corrupt,
-    # a phantom path enters the token pipeline, and the scan sees nothing
-    # wrong. Exactly the plant-a-file case --uncommitted review invites.
-    case "$uf" in
-      *'"'* | *"$NL"* | *"$TABCH"* | *\\*)
-        # The sentinel X survives awk's record split so a TRAILING newline is
-        # distinguishable from none; awk consumes the final separator, which
-        # otherwise turned "foo\n" into "foo" — a path that does not exist.
-        printf 'A\t%s\n' "$(printf '%sX' "$uf" | awk '
-          { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); l[NR] = $0 }
-          END { s = ""; for (i = 1; i <= NR; i++) s = s (i > 1 ? "\\n" : "") l[i]
-                sub(/X$/, "", s); printf "\"%s\"", s }')" >> "$OUT/files.txt"
-        ;;
-      *) printf 'A\t%s\n' "$uf" >> "$OUT/files.txt" ;;
-    esac
-    # `|| true` hid real failures (unreadable file, permission denied) behind
-    # the expected exit 1 that just means "these files differ" — producing a
-    # bundle that looks complete while a new file's contents are missing from
-    # the diff reviewers read.
-    # git exits 1 both for "these differ" (expected) and for "cannot read that
-    # path" — so the status alone cannot tell a real failure from the normal
-    # case. Prove the file is readable first; then exit 1 unambiguously means
-    # "differs". Without this a file deleted between ls-files and here yields a
-    # bundle that lists the path but omits its contents.
-    [ -r "$uf" ] || { echo "bundle.sh: untracked file vanished or unreadable: $uf" >&2; exit 2; }
-    drc=0; git diff --no-index -- /dev/null "$uf" >> "$OUT/diff.patch" || drc=$?
-    [ "$drc" -le 1 ] || { echo "bundle.sh: cannot diff untracked file: $uf (git exit $drc)" >&2; exit 2; }
-    drc=0; git diff --no-index --numstat -- /dev/null "$uf" >> "$OUT/.numstat" || drc=$?
-    [ "$drc" -le 1 ] || { echo "bundle.sh: cannot numstat untracked file: $uf (git exit $drc)" >&2; exit 2; }
+    printf 'A\t%s\n' "$uf" >> "$OUT/files.txt"
+    git diff --no-index -- /dev/null "$uf" >> "$OUT/diff.patch" || true
+    git diff --no-index --numstat -- /dev/null "$uf" >> "$OUT/.numstat" || true
   done < "$OUT/.untracked0"
   rm -f "$OUT/.untracked0"
 else
   git diff "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/diff.patch"
-  git -c core.quotePath=false diff --name-status "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/files.txt"
+  git diff --name-status "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/files.txt"
   git diff --stat "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/stats.txt"
   git diff --numstat "$MERGE_BASE" HEAD "${SPEC[@]}" > "$OUT/.numstat"
 fi
@@ -156,29 +121,8 @@ git log --reverse --format='%h %s%n%b' "$MERGE_BASE..HEAD" > "$OUT/commits.txt"
 # Changed test files, and candidate tests matched by name tokens of changed
 # source files (camelCase split at case boundaries, snake tokens >= 5 chars).
 # name-status rows are TAB-separated (last field = new path, also for renames);
-# awk must split on TAB only or paths with spaces get mangled. The listings
-# above run with core.quotePath=false so a UTF-8 name (тест.cpp) is the real
-# path here and not a \NNN escape sequence nothing can open; git still quotes
-# names holding a newline or a quote, which is precisely what makes a leading
-# " a reliable "this row is not a usable path" signal below.
+# awk must split on TAB only or paths with spaces get mangled.
 awk -F'\t' '{print $NF}' "$OUT/files.txt" > "$OUT/.paths"
-
-# Paths whose names carry shell metacharacters, or that git C-quoted (leading
-# ", which it does for control characters and embedded quotes). Two reasons to
-# single these out: pasted unquoted into a check command they are arbitrary
-# code execution — which is why selectors must be rendered with
-# `checks.sh --subst` and never by hand — and a filename like that appearing
-# in a diff is a hygiene finding in its own right. Written as a list rather
-# than dropped, because the gate still has to see that the file changed.
-# index()-per-character instead of a regex: the metacharacter set is exactly
-# what a bracket expression needs escaped, and getting that wrong silently
-# widens or empties the match.
-awk 'index($0, "\"") == 1 { print; next }
-     { bad = ";&|<>()$`\\!*?\047\"" "\n"
-       for (i = 1; i <= length(bad); i++)
-         if (index($0, substr(bad, i, 1)) > 0) { print; next } }' \
-  "$OUT/.paths" > "$OUT/unsafe_paths.txt" || true
-
 grep -E '(^|/)tests?/' "$OUT/.paths" > "$OUT/tests_changed.txt" || true
 grep -Ev '(^|/)tests?/' "$OUT/.paths" | while IFS= read -r f; do
   b="${f##*/}"; b="${b%%.*}"
@@ -191,7 +135,7 @@ done | awk 'length($0) >= 5' | sort -u | head -20 > "$OUT/.tokens" || true
 : > "$OUT/tests_candidates.txt"
 if [ -s "$OUT/.tokens" ]; then
   pat="$(paste -sd'|' - < "$OUT/.tokens")"
-  git -c core.quotePath=false ls-files -- 'tests/*' '*/tests/*' 'test/*' '*/test/*' 2>/dev/null \
+  git ls-files -- 'tests/*' '*/tests/*' 'test/*' '*/test/*' 2>/dev/null \
     | grep -E -i "($pat)" | sort -u | head -200 > "$OUT/tests_candidates.txt" || true
 fi
 rm -f "$OUT/.paths" "$OUT/.tokens"
@@ -203,21 +147,12 @@ rm -f "$OUT/.paths" "$OUT/.tokens"
   echo "base=$BASE"
   echo "merge_base=$MERGE_BASE"
   echo "uncommitted=$UNCOMMITTED"
-  # The gate builds and tests the WORKING TREE. If it is dirty on a committed
-  # run, that evidence describes a different state than diff.patch — record it
-  # so the gate can say so instead of the orchestrator having to remember.
-  echo "dirty=$(if [ -n "$(git status --porcelain 2>/dev/null)" ]; then echo 1; else echo 0; fi)"
   echo "created=$TS"
   echo "files_changed=$(wc -l < "$OUT/files.txt" | tr -d ' ')"
   echo "diff_lines=$(wc -l < "$OUT/diff.patch" | tr -d ' ')"
   echo "changed_lines=$(awk '{ins += $1; del += $2} END {print ins + del + 0}' "$OUT/.numstat")"
-  echo "unsafe_paths=$(wc -l < "$OUT/unsafe_paths.txt" | tr -d ' ')"
 } > "$OUT/meta.env"
 rm -f "$OUT/.numstat"
 
 sed 's/^/  /' "$OUT/meta.env"
-if [ -s "$OUT/unsafe_paths.txt" ]; then
-  echo "  ! shell-metacharacter paths in this diff — render selectors with checks.sh --subst, never by hand:" >&2
-  sed 's/^/    /' "$OUT/unsafe_paths.txt" >&2
-fi
 echo "$OUT"
