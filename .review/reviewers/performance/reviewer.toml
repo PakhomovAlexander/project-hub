@@ -1,0 +1,11 @@
+name = "performance"
+version = "1.1.0"
+
+[runner]
+program = "claude"
+args = [
+  { value = "--model" },
+  { value = "opus" },
+  { value = "--effort" },
+  { value = "high" },
+]
