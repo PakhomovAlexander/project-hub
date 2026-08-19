@@ -99,7 +99,9 @@ your-project-hub/
 ├── repos.manifest         # the list of repos this hub coordinates
 ├── .agents/skills/        # /adr /tracker /resume /verify /self-review-heavy /explain-asci …
 ├── .claude/               # permission lists, hooks (session brief, risky-cmd gate), agents/
-├── .github/workflows/     # docs CI: markdownlint + offline link check
+├── .review/               # /self-review-heavy's pipeline: gate checks, reviewer packages, lock
+├── tools/review-kernel/   # the Rust workspace behind it (pinned toolchain, committed lockfile)
+├── .github/workflows/     # CI: review kernel (fmt, clippy, tests, fixtures) + markdownlint + links
 ├── .markdownlint-cli2.jsonc # light, high-signal Markdown rules
 ├── docs/
 │   ├── index.md          # map of all docs

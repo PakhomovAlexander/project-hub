@@ -182,8 +182,13 @@ Work through the copied skeleton and make it real:
   pinned Rust toolchain) against the pipeline in `.review/`; reviewer model and effort
   are set per package in `.review/reviewers/<name>/reviewer.toml` (re-lock after edits —
   see `docs/self-review-heavy.md`). It needs the `claude` CLI (and `codex` if a package
-  uses it). Or drop it — delete the skill directory, `.review/`, and
-  `tools/review-kernel/`, recording all three in `dropped:`. If the team has other
+  uses it). Or drop it — delete the skill directory, `.review/`, `tools/review-kernel/`,
+  and `docs/self-review-heavy.md`, then unwire every reference so the hub does not point at
+  paths that no longer exist: the `review-kernel*` targets in `Makefile` (`.PHONY`, the
+  recipes, `RK_MANIFEST`, the `help` echoes and the header comments), the `review-kernel`
+  job and its path filters in `.github/workflows/docs-ci.yml`, and the
+  `docs/self-review-heavy.md` line in `docs/index.md` — `scripts/verify.sh` checks that
+  link, so leaving it fails the hub's own verifier. Record every deleted path in `dropped:`. If the team has other
   recurring processes, add one skill per process (a directory + `SKILL.md`, `name`
   matching the directory). `/explain-asci` is documentation-only and needs no
   repo-specific configuration.

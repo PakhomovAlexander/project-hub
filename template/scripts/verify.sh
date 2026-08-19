@@ -71,6 +71,10 @@ script_files="$(
   # template files in by writing them, which drops the exec bit — without
   # this the hub gets a skill whose scripts silently cannot run.
   find "$HUB/.agents/skills" -type f -name '*.sh' 2>/dev/null
+  # Same for tooling: the Review Kernel ships
+  # tools/review-kernel/fixtures/synthetic/generate.sh, which `make
+  # review-kernel-fixtures` executes directly.
+  find "$HUB/tools" -type f -name '*.sh' 2>/dev/null
 )"
 while IFS= read -r s; do
   [ -n "$s" ] || continue

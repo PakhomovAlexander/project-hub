@@ -119,10 +119,11 @@ calls `adopt`, so the re-reporter's severity, body, line and **source** all repl
 there: severity becomes blocker, `news_round = 1`, the finding's source becomes `perf`, and
 both reports stay attached.
 
-Ownership follows severity here, not arrival. Canonical admission order decides who owns a
-finding only for a plain **duplicate** — a re-report at the same or lower severity changes
-nothing, so the first reporter keeps it. An escalation is the case where the later report is
-the better one, and the ledger says so.
+Canonical admission order decides ownership for exactly one case: a plain **duplicate**, where
+the later report changes nothing and the first reporter keeps the finding. Everything that
+calls `adopt` reassigns `source` to the re-reporter — escalation does, and so does a **reopen**
+of a fixed finding, which adopts regardless of severity and can therefore lower it. The rule is
+not "highest severity wins" but "the report the ledger acted on owns the finding".
 
 ```
  ledger after round 1:
