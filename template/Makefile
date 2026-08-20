@@ -88,7 +88,8 @@ review-kernel-test:
 review-kernel-lock:
 	@tmp=$$(mktemp) && \
 		trap 'rm -f "$$tmp"' EXIT && \
-		cargo +1.88.0 run --manifest-path $(RK_MANIFEST) -p review-config --example lock -- \
+		cargo +1.88.0 run --locked --manifest-path $(RK_MANIFEST) \
+			-p review-config --example lock -- \
 			.review/reviewers $(RK_REVIEWERS) > "$$tmp" && \
 		mv "$$tmp" .review/review.lock && \
 		trap - EXIT

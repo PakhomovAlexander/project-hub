@@ -7,6 +7,7 @@
 #   - pristine machinery takes the template's v2
 #   - a new template file lands with the hub's answers resolved (no leftover tokens)
 #   - a customized content file is left alone (the hub's prose wins)
+#   - reviewer re-locking is dependency-pinned and atomic on failure
 #   - the provenance sha bumps and the hub's scripts/verify.sh still passes
 #
 # Run from the template repo root:  tests/smoke-update.sh
@@ -75,6 +76,37 @@ perl -pi -e "s/^(\\s*sha:).*/\$1 $NEW/" "$HUB/.hub-meta.yml"
 chmod +x "$HUB"/.claude/hooks/*.sh "$HUB"/scripts/*.sh "$HUB"/.agents/skills/*/scripts/*.sh
 echo "applied:$applied"
 echo "skipped:$skipped"
+
+# UPDATE.md requires this after reviewer-package changes. Exercise the generated Make target
+# without making this shell-only CI job install Rust: the fake records the exact Cargo contract,
+# fails once after partial output to prove atomicity, then reproduces the existing valid lock.
+FAKE_BIN="$WORK/fake-bin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/cargo" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "$CARGO_LOG"
+if [ "${CARGO_FAIL:-0}" = 1 ]; then
+  printf 'partial lock must never land\n'
+  exit 7
+fi
+cat "$CARGO_LOCK_SOURCE"
+EOF
+chmod +x "$FAKE_BIN/cargo"
+EXPECTED_LOCK="$WORK/review.lock.expected"
+cp "$HUB/.review/review.lock" "$EXPECTED_LOCK"
+if CARGO_FAIL=1 CARGO_LOG="$WORK/cargo.args" CARGO_LOCK_SOURCE="$EXPECTED_LOCK" \
+  PATH="$FAKE_BIN:$PATH" make -s -C "$HUB" review-kernel-lock; then
+  echo "FAIL: reviewer re-lock succeeded after Cargo failed" >&2
+  exit 1
+fi
+cmp -s "$EXPECTED_LOCK" "$HUB/.review/review.lock" \
+  || { echo "FAIL: failed reviewer re-lock replaced the valid lock" >&2; exit 1; }
+CARGO_LOG="$WORK/cargo.args" CARGO_LOCK_SOURCE="$EXPECTED_LOCK" \
+  PATH="$FAKE_BIN:$PATH" make -s -C "$HUB" review-kernel-lock
+grep -q -- '+1.88.0 run --locked --manifest-path tools/review-kernel/Cargo.toml' "$WORK/cargo.args" \
+  || { echo "FAIL: reviewer re-lock did not pin Cargo dependencies" >&2; exit 1; }
+grep -q -- '.review/reviewers architecture performance' "$WORK/cargo.args" \
+  || { echo "FAIL: reviewer re-lock did not discover every package" >&2; exit 1; }
 
 # --- 5. the update must have done exactly the right things ----------------------------
 grep -q 'template-v2 machinery marker' "$HUB/scripts/worktree.sh" \
