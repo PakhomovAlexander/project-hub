@@ -61,7 +61,8 @@ first. Two mechanisms carry this:
 
 ## One round, end to end
 
-`reviewctl run --campaign <name>` (see `crates/reviewctl/src/main.rs`):
+`reviewctl run --campaign <name> --authority <trusted-rev>` on the first Round (see
+`crates/reviewctl/src/main.rs`); continuation omits `--authority` and reuses the stored manifest:
 
 ```
  .review/pipelines/heavy.toml + review.lock  --load, verify digests--+
@@ -244,8 +245,10 @@ lockfile on every test run, so forgetting to re-lock fails CI, not a live review
 
 | Flag | Meaning |
 |---|---|
-| `--campaign NAME` | Join a persistent ledger; the same name continues the campaign. Without it, a run is identified by its snapshot and shares the `local` state directory. |
-| `--focus "text"` | Appended to every reviewer prompt, this round only — a narrowing, never a replacement. |
+| `--campaign NAME` | Join a persistent ledger; the same name continues the pinned Campaign. Without it, `local` is the Campaign name. |
+| `--authority REV` | Required when opening a Campaign. Resolves the trusted Snapshot that supplies pipeline, lock, reviewer packages, and policy; never re-resolved on continuation. |
+| `--restart-round` | Explicitly supersede an incomplete Round's immutable Subject and input sets with a newly captured head under the next epoch. |
+| `--focus "text"` | Pinned Campaign focus appended to every reviewer prompt; changing it requires a new Campaign. |
 | `--repo DIR` | Repo to review (default `.`). |
 | `--pipeline FILE` | Default `.review/pipelines/heavy.toml`. |
 | `--state DIR` | Override the state directory (default `.review/runs/<campaign>`). |

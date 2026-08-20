@@ -46,10 +46,11 @@ fresh campaign to escape an inconvenient ledger.
 ## 2 · Run a round
 
 ```
-reviewctl run --campaign <name> [--focus "<what to weigh this round>"]
+reviewctl run --campaign <name> --authority <trusted-rev> [--focus "<campaign focus>"]
 ```
 
-The kernel captures HEAD, runs the gate checks in a read-only sandbox, dispatches the
+`--authority` is required only when the Campaign opens. Continuations reuse the stored Campaign
+Manifest and do not resolve that ref again. The kernel then captures HEAD, runs the gate checks in a read-only sandbox, dispatches the
 reviewers concurrently under the pipeline's budgets, reduces their reports into the
 ledger, and prints every node outcome, the findings, the spend, and the verdict. From
 round 2 on, every reviewer receives the campaign's prior findings as labelled data and is
