@@ -1,11 +1,11 @@
 name = "performance"
-version = "1.1.0"
+version = "1.3.0"
 
 [runner]
-program = "claude"
+program = "codex"
 args = [
   { value = "--model" },
-  { value = "opus" },
-  { value = "--effort" },
-  { value = "high" },
+  { value = "gpt-5.6-terra" },
+  { value = "-c" },
+  { value = 'model_reasoning_effort="high"' },
 ]

@@ -25,10 +25,16 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use review_attempt::{AttemptLedger, Budget, BudgetLedger, Receipt, Scope, Selection};
+use review_attempt::{
+    AttemptId, AttemptLedger, Budget, BudgetLedger, Receipt, Reservation, Scope, Selection,
+};
 use review_check::{CheckDefinition, CheckRunner, Command, GateDecision, check_event};
-use review_core::LegacyStageOutput;
-use review_graph::{Dispatch, Node, NodeKind, NodeOutcome, RunReport};
+use review_core::{
+    EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PortArtifactsV1, RunFailureReasonV2, RunNodeOutcomeV2,
+    RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity,
+};
+use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
 use review_runner::{ReviewerAdapter, ReviewerInputs, RunnerError};
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
@@ -41,10 +47,38 @@ const PRIOR_FINDINGS_PORT: &str = "prior_findings";
 
 /// The artifact ids a node's resolved inputs carry, dropping the port labels — for reducers
 /// (gather, ledger) that consume artifacts regardless of which port delivered them.
-fn artifact_ids(inputs: &[(String, String)]) -> Vec<String> {
-    inputs
+fn artifact_ids(inputs: &ArtifactMap) -> Vec<String> {
+    inputs.values().flatten().cloned().collect()
+}
+
+fn bind_single_output(node: &Node, artifacts: Vec<String>) -> Result<ArtifactMap, String> {
+    let [port] = node.outputs.as_slice() else {
+        return Err(format!(
+            "node {} has {} output ports, but its built-in dispatcher produces one port",
+            node.id,
+            node.outputs.len()
+        ));
+    };
+    Ok(BTreeMap::from([(port.name.clone(), artifacts)]))
+}
+
+fn port_artifacts(
+    contracts: &[PortContract],
+    artifacts: &ArtifactMap,
+    subject_snapshot_id: &str,
+) -> Vec<PortArtifactsV1> {
+    contracts
         .iter()
-        .map(|(_, artifact)| artifact.clone())
+        .map(|port| PortArtifactsV1 {
+            port: port.name.clone(),
+            artifact_type: port.artifact_type.clone(),
+            cardinality: port.cardinality,
+            optional: port.optional,
+            snapshot_affinity: port.snapshot_affinity,
+            artifact_ids: artifacts.get(&port.name).cloned().unwrap_or_default(),
+            subject_snapshot_id: (port.snapshot_affinity == SnapshotAffinity::SameSubject)
+                .then(|| subject_snapshot_id.to_string()),
+        })
         .collect()
 }
 
@@ -52,6 +86,11 @@ fn artifact_ids(inputs: &[(String, String)]) -> Vec<String> {
 struct Budgets {
     attempt_cap: u64,
     ledger: Mutex<BudgetLedger>,
+}
+
+struct PreparedReviewerAttempt {
+    attempt: AttemptId,
+    reservation: Option<Reservation>,
 }
 
 /// What one whole run amounts to.
@@ -91,6 +130,12 @@ pub fn run_verdict(report: &RunReport, convergence: &Convergence) -> RunVerdict 
     if !missing.is_empty() {
         return RunVerdict::Incomplete { missing };
     }
+    // A gate can be intentionally observational and gate no downstream node. Its blocked
+    // decision still prevents a pass even though there is then no suppressed outcome to make
+    // the run incomplete.
+    if !report.blocked_gates.is_empty() {
+        return RunVerdict::Fail(Verdict::NotConverged);
+    }
     match convergence.verdict {
         Verdict::Converged => RunVerdict::Pass,
         other => RunVerdict::Fail(other),
@@ -125,6 +170,9 @@ pub struct Kernel<'a> {
     /// keeps a node's own events in the order it emitted them; the flush sorts by that key.
     reviewer_events: Mutex<Vec<((String, u64), NewEvent)>>,
     reviewer_event_seq: Mutex<u64>,
+    /// First attempts are reserved, assigned, and durably dispatched by the scheduler thread in
+    /// plan order before any external model call starts. The worker removes its prepared entry.
+    prepared_attempts: Mutex<BTreeMap<String, PreparedReviewerAttempt>>,
     /// The snapshot materialized once, cloned per sandbox. Built lazily on the first sandbox
     /// request — the gate's — so a run that never reaches a sandbox never pays for it.
     template: Mutex<Option<std::sync::Arc<review_sandbox::SandboxTemplate>>>,
@@ -151,6 +199,7 @@ impl<'a> Kernel<'a> {
             prior_findings: None,
             reviewer_events: Mutex::new(Vec::new()),
             reviewer_event_seq: Mutex::new(0),
+            prepared_attempts: Mutex::new(BTreeMap::new()),
             template: Mutex::new(None),
         }
     }
@@ -215,7 +264,12 @@ impl<'a> Kernel<'a> {
 
     /// The ledger as it stands, rebuilt from the log rather than accumulated in memory.
     pub fn ledger(&self) -> Ledger {
-        Ledger::rebuild(*self.store.lock().expect("event store"), &self.run_id).expect("replay")
+        Ledger::rebuild(
+            *self.store.lock().expect("event store"),
+            self.cas,
+            &self.run_id,
+        )
+        .expect("replay")
     }
 
     pub fn convergence(&self, policy: ConvergencePolicy) -> Convergence {
@@ -232,6 +286,130 @@ impl<'a> Kernel<'a> {
             .append(&self.run_id, self.cas, event)
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    fn append_batch(&self, events: &[NewEvent]) -> Result<(), String> {
+        self.store
+            .lock()
+            .expect("event store")
+            .append_batch(&self.run_id, self.cas, events)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    fn prepare_reviewer_attempt(
+        &self,
+        node_id: &str,
+        prior_findings_artifact: Option<&String>,
+        timeouts: &[String],
+    ) -> Result<PreparedReviewerAttempt, String> {
+        let reservation = match &self.budgets {
+            Some(budgets) => Some(
+                budgets
+                    .ledger
+                    .lock()
+                    .expect("budget ledger")
+                    .reserve(
+                        &[Scope::Node(node_id.to_string()), Scope::Run],
+                        budgets.attempt_cap,
+                    )
+                    .map_err(|error| {
+                        if timeouts.is_empty() {
+                            format!("never dispatched: {error}")
+                        } else {
+                            format!("{}; retry refused: {error}", timeouts.join("; "))
+                        }
+                    })?,
+            ),
+            None => None,
+        };
+        let attempt = self
+            .attempts
+            .lock()
+            .expect("attempt ledger")
+            .dispatch(node_id);
+        let event = NewEvent::new(
+            EventType::AttemptDispatchedV1,
+            serde_json::json!({
+                "reserved": reservation.as_ref().map(|reservation| reservation.amount),
+                "prior_findings": prior_findings_artifact,
+            }),
+        )
+        .node(node_id)
+        .attempt(attempt.to_string())
+        .referencing(prior_findings_artifact.cloned().into_iter().collect());
+        if let Err(error) = self.append(event) {
+            if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
+                budgets
+                    .ledger
+                    .lock()
+                    .expect("budget ledger")
+                    .release(reservation);
+            }
+            self.attempts.lock().expect("attempt ledger").fence(node_id);
+            return Err(error);
+        }
+        Ok(PreparedReviewerAttempt {
+            attempt,
+            reservation,
+        })
+    }
+
+    fn release_prepared_attempt(
+        &self,
+        node_id: &str,
+        attempt: &AttemptId,
+        reservation: Option<&Reservation>,
+        error: &str,
+    ) -> Result<(), String> {
+        if let (Some(budgets), Some(reservation)) = (&self.budgets, reservation) {
+            budgets
+                .ledger
+                .lock()
+                .expect("budget ledger")
+                .release(reservation);
+        }
+        self.attempts.lock().expect("attempt ledger").fence(node_id);
+        self.append(
+            NewEvent::new(
+                EventType::AttemptReleasedV1,
+                serde_json::json!({
+                    "error": error,
+                    "released": reservation.map(|reservation| reservation.amount),
+                }),
+            )
+            .node(node_id)
+            .attempt(attempt.to_string()),
+        )
+    }
+
+    fn fail_started_attempt(
+        &self,
+        node_id: &str,
+        attempt: &AttemptId,
+        reservation: Option<&Reservation>,
+        error: &str,
+        charged: u64,
+    ) -> Result<(), String> {
+        if let (Some(budgets), Some(reservation)) = (&self.budgets, reservation) {
+            budgets
+                .ledger
+                .lock()
+                .expect("budget ledger")
+                .charge(reservation, charged);
+        }
+        self.attempts
+            .lock()
+            .expect("attempt ledger")
+            .charge(attempt, charged);
+        self.append(
+            NewEvent::new(
+                EventType::AttemptFailedV1,
+                serde_json::json!({ "error": error, "charged": charged }),
+            )
+            .node(node_id)
+            .attempt(attempt.to_string()),
+        )
     }
 
     /// Hold a reviewer-thread event for the canonical-order flush. See `reviewer_events`.
@@ -251,12 +429,11 @@ impl<'a> Kernel<'a> {
     /// already-drained buffer is a no-op, which is why a gather-less pipeline can still flush
     /// from the run driver.
     pub fn flush_reviewer_events(&self) -> Result<(), String> {
-        let mut ordered: Vec<((String, u64), NewEvent)> =
-            std::mem::take(&mut *self.reviewer_events.lock().expect("reviewer events"));
-        ordered.sort_by(|a, b| a.0.cmp(&b.0));
-        for (_, event) in ordered {
-            self.append(event)?;
-        }
+        let mut pending = self.reviewer_events.lock().expect("reviewer events");
+        pending.sort_by(|a, b| a.0.cmp(&b.0));
+        let events: Vec<NewEvent> = pending.iter().map(|(_, event)| event.clone()).collect();
+        self.append_batch(&events)?;
+        pending.clear();
         Ok(())
     }
 
@@ -270,28 +447,64 @@ impl<'a> Kernel<'a> {
         // reaches it, and the buffered attempts, charges included, would be lost. Every run
         // ends with a report, so flushing here records the paid work no matter the graph.
         self.flush_reviewer_events()?;
-        let outcomes: Vec<serde_json::Value> = report
+        let outcomes: Vec<RunNodeReportV2> = report
             .outcomes
             .iter()
             .map(|(id, outcome)| {
-                let (status, detail) = match outcome {
-                    NodeOutcome::Completed { outputs } => ("completed", serde_json::json!(outputs)),
-                    NodeOutcome::Failed { error } => ("failed", serde_json::json!(error)),
-                    NodeOutcome::Suppressed { reason } => {
-                        ("suppressed", serde_json::json!(format!("{reason:?}")))
-                    }
+                let outcome = match outcome {
+                    NodeOutcome::Completed { outputs } => RunNodeOutcomeV2::Completed {
+                        output_artifacts: artifact_ids(outputs),
+                    },
+                    NodeOutcome::Failed { error } => RunNodeOutcomeV2::Failed {
+                        error: error.clone(),
+                    },
+                    NodeOutcome::Suppressed { reason } => RunNodeOutcomeV2::Suppressed {
+                        reason: match reason {
+                            review_graph::SuppressionReason::GateBlocked => {
+                                RunSuppressionReasonV2::GateBlocked
+                            }
+                            review_graph::SuppressionReason::UpstreamMissing => {
+                                RunSuppressionReasonV2::UpstreamMissing
+                            }
+                        },
+                    },
                 };
-                serde_json::json!({ "node": id, "status": status, "detail": detail })
+                RunNodeReportV2 {
+                    node: id.clone(),
+                    outcome,
+                }
             })
             .collect();
+        let verdict = match verdict {
+            RunVerdict::Pass => RunVerdictV2::Pass,
+            RunVerdict::Fail(Verdict::NotConverged) => RunVerdictV2::Fail {
+                reason: RunFailureReasonV2::NotConverged,
+            },
+            RunVerdict::Fail(Verdict::Exhausted) => RunVerdictV2::Fail {
+                reason: RunFailureReasonV2::Exhausted,
+            },
+            RunVerdict::Fail(Verdict::Converged) => {
+                return Err("invalid run verdict: converged cannot be a failure".to_string());
+            }
+            RunVerdict::Incomplete { missing } => RunVerdictV2::Incomplete {
+                missing_nodes: missing
+                    .iter()
+                    .map(|(node, reason)| MissingNodeV2 {
+                        node: node.clone(),
+                        reason: reason.clone(),
+                    })
+                    .collect(),
+            },
+        };
+        let payload = RunReportPayloadV2 {
+            outcomes,
+            blocked_gates: report.blocked_gates.iter().cloned().collect(),
+            verdict,
+            spent_tokens: self.spent(),
+        };
         self.append(NewEvent::new(
-            "RunReport@1",
-            serde_json::json!({
-                "outcomes": outcomes,
-                "blocked_gates": report.blocked_gates,
-                "verdict": format!("{verdict:?}"),
-                "spent_tokens": self.spent(),
-            }),
+            EventType::RunReportV2,
+            serde_json::to_value(payload).map_err(|e| e.to_string())?,
         ))
     }
 
@@ -367,7 +580,7 @@ impl<'a> Kernel<'a> {
             .map_err(|e| e.to_string())?;
         self.append(
             NewEvent::new(
-                "GateDecision@1",
+                EventType::GateDecisionV1,
                 serde_json::to_value(&decision).map_err(|e| e.to_string())?,
             )
             .node(node_id)
@@ -383,23 +596,41 @@ impl<'a> Kernel<'a> {
     fn run_reviewer(
         &self,
         node_id: &str,
-        node_inputs: &[(String, String)],
+        node_inputs: &ArtifactMap,
     ) -> Result<Vec<String>, String> {
         let adapter = self
             .reviewers
             .get(node_id)
             .ok_or_else(|| format!("no reviewer bound to node {node_id}"))?;
+        let mut prepared = self
+            .prepared_attempts
+            .lock()
+            .expect("prepared attempts")
+            .remove(node_id);
 
         // Prior findings arrive through the wired `prior_findings` input port — a data artifact
         // the pipeline routed from the generation node — not from ambient kernel state. A
         // reviewer that declares no such input receives none; the plan is the delivery.
         let prior_findings_artifact = node_inputs
-            .iter()
-            .find(|(port, _)| port == PRIOR_FINDINGS_PORT)
-            .map(|(_, artifact)| artifact.clone());
+            .get(PRIOR_FINDINGS_PORT)
+            .and_then(|artifacts| artifacts.first())
+            .cloned();
         let mut inputs = ReviewerInputs::default();
         if let Some(artifact) = &prior_findings_artifact {
-            let value = self.cas.get_json(artifact).map_err(|e| e.to_string())?;
+            let value = match self.cas.get_json(artifact) {
+                Ok(value) => value,
+                Err(error) => {
+                    if let Some(prepared) = prepared.take() {
+                        self.release_prepared_attempt(
+                            node_id,
+                            &prepared.attempt,
+                            prepared.reservation.as_ref(),
+                            &error.to_string(),
+                        )?;
+                    }
+                    return Err(error.to_string());
+                }
+            };
             // The generation node emits an empty document in the first round; only a non-empty
             // finding set is worth rendering into the prompt.
             let has_findings = value
@@ -413,48 +644,96 @@ impl<'a> Kernel<'a> {
 
         let mut timeouts: Vec<String> = Vec::new();
         for _ in 0..=self.timeout_retries {
-            // Reserve before dispatch. A dispatch that cannot reserve never runs, and the
-            // refusal is the node's outcome — this is how "never ran" reaches the report.
-            let reservation = match &self.budgets {
-                Some(budgets) => Some(
-                    budgets
-                        .ledger
-                        .lock()
-                        .expect("budget ledger")
-                        .reserve(
-                            &[Scope::Node(node_id.to_string()), Scope::Run],
-                            budgets.attempt_cap,
-                        )
-                        .map_err(|e| format!("never dispatched: {e}"))?,
-                ),
-                None => None,
+            // The scheduler prepares the first attempt in plan order before spawning this
+            // worker. Timeout retries are prepared here only after the predecessor is fenced.
+            let PreparedReviewerAttempt {
+                attempt,
+                reservation,
+            } = match prepared.take() {
+                Some(prepared) => prepared,
+                None => self.prepare_reviewer_attempt(
+                    node_id,
+                    prior_findings_artifact.as_ref(),
+                    &timeouts,
+                )?,
             };
-            let attempt = self
-                .attempts
-                .lock()
-                .expect("attempt ledger")
-                .dispatch(node_id);
-            self.buffer_reviewer_event(
-                node_id,
-                NewEvent::new(
-                    "AttemptDispatched@1",
-                    serde_json::json!({
-                        "reserved": reservation.as_ref().map(|r| r.amount),
-                        "prior_findings": prior_findings_artifact,
-                    }),
-                )
-                .node(node_id)
-                .attempt(attempt.to_string())
-                .referencing(prior_findings_artifact.iter().cloned().collect()),
-            );
 
             // Each attempt gets its own fresh sandbox. Reviewers may edit freely — a TDD
             // reviewer must — and nothing they do can reach a sibling, the source, the
             // snapshot, or a retry of themselves.
-            let sandbox = self.sandbox(Mode::EphemeralWrite)?;
+            let sandbox = match self.sandbox(Mode::EphemeralWrite) {
+                Ok(sandbox) => sandbox,
+                Err(error) => {
+                    self.release_prepared_attempt(node_id, &attempt, reservation.as_ref(), &error)?;
+                    return Err(error);
+                }
+            };
 
-            match adapter.invoke(self.cas, sandbox.root(), &inputs) {
+            let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                adapter.invoke(self.cas, sandbox.root(), &inputs)
+            }));
+            let invoked = match invoked {
+                Ok(invoked) => invoked,
+                Err(_) => {
+                    let error = format!("reviewer adapter panicked for node {node_id}");
+                    let charged = reservation
+                        .as_ref()
+                        .map_or(0, |reservation| reservation.amount);
+                    self.fail_started_attempt(
+                        node_id,
+                        &attempt,
+                        reservation.as_ref(),
+                        &error,
+                        charged,
+                    )?;
+                    return Err(error);
+                }
+            };
+
+            match invoked {
                 Ok(returned) => {
+                    let artifact = (|| -> Result<String, String> {
+                        let sealed = sandbox.seal().map_err(|error| error.to_string())?;
+                        // The mutation set can be enormous — a reviewer that built to verify a
+                        // claim leaves a whole target/ behind. The full list lives once in the
+                        // CAS; the result artifact carries only a bounded summary.
+                        let mutations_artifact = self
+                            .cas
+                            .put_json(&serde_json::json!({
+                                "added": sealed.mutations.added,
+                                "modified": sealed.mutations.modified,
+                                "deleted": sealed.mutations.deleted,
+                            }))
+                            .map_err(|error| error.to_string())?;
+                        let mutation_summary =
+                            mutation_summary(&sealed.mutations, &mutations_artifact);
+                        self.cas
+                            .put_json(&serde_json::json!({
+                                "node": node_id,
+                                "attempt": attempt.to_string(),
+                                "output": serde_json::to_value(&returned.output)
+                                    .map_err(|error| error.to_string())?,
+                                "cost_tokens": returned.cost_tokens,
+                                "raw": returned.raw_artifact,
+                                "sandbox_mutations": mutation_summary,
+                            }))
+                            .map_err(|error| error.to_string())
+                    })();
+                    let artifact = match artifact {
+                        Ok(artifact) => artifact,
+                        Err(error) => {
+                            self.fail_started_attempt(
+                                node_id,
+                                &attempt,
+                                reservation.as_ref(),
+                                &error,
+                                returned.cost_tokens,
+                            )?;
+                            return Err(error);
+                        }
+                    };
+
+                    // Selection is recorded only after the complete receipted output exists.
                     let selection = self
                         .attempts
                         .lock()
@@ -464,8 +743,6 @@ impl<'a> Kernel<'a> {
                             output: returned.raw_artifact.clone(),
                             cost: returned.cost_tokens,
                         });
-                    // The spend happened whatever the selection said; forgiving a fenced
-                    // attempt's bill would make lateness cheaper than answering.
                     if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
                         budgets
                             .ledger
@@ -473,81 +750,26 @@ impl<'a> Kernel<'a> {
                             .expect("budget ledger")
                             .charge(reservation, returned.cost_tokens);
                     }
-                    self.buffer_reviewer_event(
-                        node_id,
-                        NewEvent::new(
-                            "AttemptAdmitted@1",
-                            serde_json::json!({
-                                "selection": match selection {
-                                    Selection::Selected => "selected",
-                                    Selection::Quarantined => "quarantined",
-                                },
-                                "cost_tokens": returned.cost_tokens,
-                            }),
-                        )
-                        .node(node_id)
-                        .attempt(attempt.to_string())
-                        .referencing(vec![returned.raw_artifact.clone()]),
-                    );
+                    let admitted = NewEvent::new(
+                        EventType::AttemptAdmittedV1,
+                        serde_json::json!({
+                            "selection": match selection {
+                                Selection::Selected => "selected",
+                                Selection::Quarantined => "quarantined",
+                            },
+                            "cost_tokens": returned.cost_tokens,
+                        }),
+                    )
+                    .node(node_id)
+                    .attempt(attempt.to_string())
+                    .referencing(vec![returned.raw_artifact.clone()]);
                     if selection == Selection::Quarantined {
-                        // Fenced while running: the receipt and its charge stand, the output
-                        // is invisible downstream. This is `admit`'s entire enforcement point.
+                        self.append(admitted)?;
                         return Err(format!(
                             "attempt {attempt} was fenced; its late result is quarantined"
                         ));
                     }
-
-                    let sealed = sandbox.seal().map_err(|e| e.to_string())?;
-                    // The mutation set can be enormous — a reviewer that built to verify a
-                    // claim leaves a whole target/ behind. The full list lives once in the CAS
-                    // (content-addressed, so identical sets across attempts dedupe); the result
-                    // artifact and the event carry a bounded summary that references it, never
-                    // the whole list inlined into SQLite and re-parsed on every ledger rebuild.
-                    let mutations_artifact = self
-                        .cas
-                        .put_json(&serde_json::json!({
-                            "added": sealed.mutations.added,
-                            "modified": sealed.mutations.modified,
-                            "deleted": sealed.mutations.deleted,
-                        }))
-                        .map_err(|e| e.to_string())?;
-                    let mutation_summary = mutation_summary(&sealed.mutations, &mutations_artifact);
-
-                    // The artifact is the node's typed result, whole — it is what the edges
-                    // deliver, so it must be sufficient for whatever consumes it.
-                    let artifact = self
-                        .cas
-                        .put_json(&serde_json::json!({
-                            "node": node_id,
-                            "attempt": attempt.to_string(),
-                            "output": serde_json::to_value(&returned.output)
-                                .map_err(|e| e.to_string())?,
-                            "cost_tokens": returned.cost_tokens,
-                            "raw": returned.raw_artifact,
-                            "sandbox_mutations": mutation_summary,
-                        }))
-                        .map_err(|e| e.to_string())?;
-                    self.buffer_reviewer_event(
-                        node_id,
-                        NewEvent::new(
-                            // The design's name for this record. Not "ReviewerResult@1":
-                            // that is the typed result contract, and this is the receipt.
-                            "NodeOutputReceipt@1",
-                            serde_json::json!({
-                                "verdict": format!("{:?}", returned.output.verdict),
-                                "findings": returned.output.findings.len(),
-                                "cost_tokens": returned.cost_tokens,
-                                "sandbox_mutations": mutation_summary,
-                            }),
-                        )
-                        .node(node_id)
-                        .attempt(attempt.to_string())
-                        .referencing(vec![
-                            artifact.clone(),
-                            returned.raw_artifact.clone(),
-                            mutations_artifact,
-                        ]),
-                    );
+                    self.buffer_reviewer_event(node_id, admitted);
                     return Ok(vec![artifact]);
                 }
                 Err(RunnerError::TimedOut { after_ms }) => {
@@ -556,6 +778,12 @@ impl<'a> Kernel<'a> {
                     // fenced attempt charges", and the one that keeps a hang from being a
                     // free retry.
                     self.attempts.lock().expect("attempt ledger").fence(node_id);
+                    if let Some(reservation) = &reservation {
+                        self.attempts
+                            .lock()
+                            .expect("attempt ledger")
+                            .charge(&attempt, reservation.amount);
+                    }
                     if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
                         budgets
                             .ledger
@@ -563,10 +791,9 @@ impl<'a> Kernel<'a> {
                             .expect("budget ledger")
                             .charge(reservation, reservation.amount);
                     }
-                    self.buffer_reviewer_event(
-                        node_id,
+                    self.append(
                         NewEvent::new(
-                            "AttemptFenced@1",
+                            EventType::AttemptFencedV1,
                             serde_json::json!({
                                 "reason": format!("timed out after {after_ms}ms"),
                                 "charged": reservation.as_ref().map(|r| r.amount),
@@ -574,7 +801,7 @@ impl<'a> Kernel<'a> {
                         )
                         .node(node_id)
                         .attempt(attempt.to_string()),
-                    );
+                    )?;
                     timeouts.push(format!("attempt {attempt} timed out after {after_ms}ms"));
                 }
                 Err(error @ (RunnerError::Refused(_) | RunnerError::Unavailable(_))) => {
@@ -587,10 +814,9 @@ impl<'a> Kernel<'a> {
                             .expect("budget ledger")
                             .release(reservation);
                     }
-                    self.buffer_reviewer_event(
-                        node_id,
+                    self.append(
                         NewEvent::new(
-                            "AttemptReleased@1",
+                            EventType::AttemptReleasedV1,
                             serde_json::json!({
                                 "error": error.to_string(),
                                 "released": reservation.as_ref().map(|r| r.amount),
@@ -598,7 +824,7 @@ impl<'a> Kernel<'a> {
                         )
                         .node(node_id)
                         .attempt(attempt.to_string()),
-                    );
+                    )?;
                     return Err(error.to_string());
                 }
                 Err(error) => {
@@ -612,10 +838,15 @@ impl<'a> Kernel<'a> {
                             .expect("budget ledger")
                             .charge(reservation, reservation.amount);
                     }
-                    self.buffer_reviewer_event(
-                        node_id,
+                    if let Some(reservation) = &reservation {
+                        self.attempts
+                            .lock()
+                            .expect("attempt ledger")
+                            .charge(&attempt, reservation.amount);
+                    }
+                    self.append(
                         NewEvent::new(
-                            "AttemptFailed@1",
+                            EventType::AttemptFailedV1,
                             serde_json::json!({
                                 "error": error.to_string(),
                                 "charged": reservation.as_ref().map(|r| r.amount),
@@ -623,7 +854,7 @@ impl<'a> Kernel<'a> {
                         )
                         .node(node_id)
                         .attempt(attempt.to_string()),
-                    );
+                    )?;
                     return Err(error.to_string());
                 }
             }
@@ -686,15 +917,19 @@ impl<'a> Kernel<'a> {
                 Ingest::new(*store, self.cas, self.run_id.clone()).map_err(|e| e.to_string())?;
             for (node_id, stage) in &results {
                 ingest
-                    .add_stage_output(node_id, stage)
+                    .add_live_stage_output(node_id, stage)
                     .map_err(|e| e.to_string())?;
             }
         }
         // The `findings` port must carry a real artifact, not a label: the scheduler delivers
         // exactly this string to whatever consumes the port, and a downstream event referencing
         // a non-CAS string would be rejected as a dangling artifact far from its cause.
-        let ledger = Ledger::rebuild(*self.store.lock().expect("event store"), &self.run_id)
-            .map_err(|e| e.to_string())?;
+        let ledger = Ledger::rebuild(
+            *self.store.lock().expect("event store"),
+            self.cas,
+            &self.run_id,
+        )
+        .map_err(|e| e.to_string())?;
         let artifact = self
             .cas
             .put_json(&serde_json::json!({
@@ -728,10 +963,39 @@ fn mutation_summary(
 }
 
 impl Dispatch for Kernel<'_> {
-    fn run(&self, node: &Node, inputs: &[(String, String)]) -> Result<Vec<String>, String> {
+    fn record_invocation(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
+        let payload = NodeInvocationPayloadV1 {
+            node: node.id.clone(),
+            inputs: port_artifacts(&node.inputs, inputs, &self.snapshot.content_digest()),
+        };
+        self.append(
+            NewEvent::new(
+                EventType::NodeInvocationV1,
+                serde_json::to_value(payload).map_err(|e| e.to_string())?,
+            )
+            .node(&node.id)
+            .referencing(artifact_ids(inputs)),
+        )?;
+        if node.kind == NodeKind::Reviewer {
+            if !self.reviewers.contains_key(&node.id) {
+                return Err(format!("no reviewer bound to node {}", node.id));
+            }
+            let prior_findings = inputs
+                .get(PRIOR_FINDINGS_PORT)
+                .and_then(|artifacts| artifacts.first());
+            let prepared = self.prepare_reviewer_attempt(&node.id, prior_findings, &[])?;
+            self.prepared_attempts
+                .lock()
+                .expect("prepared attempts")
+                .insert(node.id.clone(), prepared);
+        }
+        Ok(())
+    }
+
+    fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
         // Routing is on the validated kind, never the id: an id is a name someone chose, and a
         // reviewer named `gather` must still be a reviewer that runs.
-        match node.kind {
+        let artifacts = match node.kind {
             NodeKind::Generation => self.run_generation(),
             NodeKind::Gate => self.run_gate(&node.id),
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
@@ -739,10 +1003,48 @@ impl Dispatch for Kernel<'_> {
             NodeKind::Gather => self.run_gather(&artifact_ids(inputs)),
             NodeKind::Ledger => self.run_ledger(&artifact_ids(inputs)),
             NodeKind::Reviewer => self.run_reviewer(&node.id, inputs),
+        }?;
+        bind_single_output(node, artifacts)
+    }
+
+    fn record_outputs(&self, node: &Node, outputs: &ArtifactMap) -> Result<(), String> {
+        let payload = NodeOutputReceiptPayloadV1 {
+            node: node.id.clone(),
+            outputs: port_artifacts(&node.outputs, outputs, &self.snapshot.content_digest()),
+        };
+        let mut event = NewEvent::new(
+            EventType::NodeOutputReceiptV1,
+            serde_json::to_value(payload).map_err(|e| e.to_string())?,
+        )
+        .node(&node.id)
+        .referencing(artifact_ids(outputs));
+        if node.kind == NodeKind::Reviewer
+            && let Some(artifact) = artifact_ids(outputs).first()
+            && let Ok(value) = self.cas.get_json(artifact)
+            && let Some(attempt) = value.get("attempt").and_then(serde_json::Value::as_str)
+        {
+            event = event.attempt(attempt);
+        }
+        if node.kind == NodeKind::Reviewer {
+            // The scheduler publishes outputs as soon as this returns. Commit the attempt
+            // lifecycle and receipt together before that publication point; retaining buffered
+            // events until gather permits consumers to be selected from an unsealed output.
+            let mut pending = self.reviewer_events.lock().expect("reviewer events");
+            let mut events: Vec<NewEvent> = pending
+                .iter()
+                .filter(|((id, _), _)| id == &node.id)
+                .map(|(_, event)| event.clone())
+                .collect();
+            events.push(event);
+            self.append_batch(&events)?;
+            pending.retain(|((id, _), _)| id != &node.id);
+            Ok(())
+        } else {
+            self.append(event)
         }
     }
 
-    fn gate_passed(&self, node_id: &str, _outputs: &[String]) -> bool {
+    fn gate_passed(&self, node_id: &str, _outputs: &ArtifactMap) -> bool {
         self.gates
             .lock()
             .expect("gates")

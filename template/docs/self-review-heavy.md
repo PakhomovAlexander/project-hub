@@ -101,7 +101,7 @@ dispute, or drop each carried prior finding — a dispute lands the finding as `
 
 Reviewers: `architecture` (arch) and `performance` (perf). Defaults from
 [`heavy.toml`](../.review/pipelines/heavy.toml): convergence gate `major`,
-`clean_rounds = 1`, `max_rounds = 3`. Keys below are illustrative.
+`clean_rounds = 2`, `max_rounds = 4`. Keys below are illustrative.
 
 **Round 1.** The gate passes. Reports, admitted arch-first (canonical order):
 
@@ -175,8 +175,9 @@ an infrastructure failure re-enters the same round instead of consuming one of t
 ## Deliberate behaviors that look like bugs
 
 - **A finding you fixed this round still blocks convergence.** The news counter ignores
-  status by design: a fix must survive one more review round. `clean_rounds = 1` therefore
-  means "minimum two rounds if round 1 found anything at or above the gate".
+  status by design: a fix must survive the configured quiet window. `clean_rounds = 2`
+  guarantees two rounds for an initially clean campaign and normally requires a third
+  confirmation round after round-1 findings are fixed.
 - **A rejected finding can delay convergence.** A reviewer independently re-finding your
   rejection at *higher* severity bumps its news round (status still stays rejected). That
   costs a round — deliberately: it forces the escalation in front of you instead of letting
@@ -247,7 +248,10 @@ lockfile on every test run, so forgetting to re-lock fails CI, not a live review
 | `--state DIR` | Override the state directory (default `.review/runs/<campaign>`). |
 | `--timeout-secs N` | Per-reviewer-invocation timeout (default 1800). |
 
-`reviewctl ledger --campaign NAME` prints the findings machine-readably;
+`reviewctl ledger --campaign NAME` prints the compact findings ledger;
+`reviewctl ledger --campaign NAME --long` includes each finding's body and fix;
+`reviewctl show --campaign NAME KEY` prints its complete attached reports and history;
+`reviewctl report --campaign NAME --format md` emits the canonical closing report;
 `reviewctl resolve --campaign NAME KEY STATUS [--note TEXT]` records a disposition
 (`open`, `fixed`, `rejected`, `wontfix`, `contested`).
 

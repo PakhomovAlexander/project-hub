@@ -6,16 +6,17 @@
 //! `claude` 2.1.234 run on 2026-08-18: `-p --output-format json` prints one JSON envelope
 //! with `is_error`, the final text in `result`, and cumulative token usage in `usage`.
 //!
-//! **Auth is three grants, discovered by bisection against the real CLI.** The credentials
-//! live in the macOS keychain, and the lookup needs `CLAUDE_CONFIG_DIR` (which profile),
-//! `USER` (the keychain account), and the real `HOME` (the keychain search path) — a scrubbed
-//! `HOME` reads as logged out. Granting the real `HOME` is a deliberate loosening relative to
-//! the codex adapter, recorded here: the CLI's own permission layer still confines tool use
-//! to the sandbox it is `-C`'d into, and every grant's value is redacted from everything
-//! stored — which incidentally scrubs the operator's username from run artifacts.
+//! **Auth is explicit grants, discovered by bisection against the real CLI.** Keychain auth
+//! needs `USER` (the keychain account) and the real `HOME` (the keychain search path). An
+//! operator-selected profile additionally needs `CLAUDE_CONFIG_DIR`. Never synthesize a config
+//! directory: current Claude treats an explicit `$HOME/.claude` differently from its unset
+//! default and therefore selects the wrong credential profile. Ambient API keys are not
+//! forwarded because they can silently override the selected subscription identity. Granting
+//! the real `HOME` is a deliberate loosening relative to the codex adapter; every grant's value
+//! is redacted from everything stored.
 //!
-//! **Token mapping, recorded:** cost is `usage.input_tokens + usage.output_tokens` as the CLI
-//! reports them — cache reads and writes excluded. An agentic reviewer re-reads its context
+//! **Token mapping, recorded:** cost is uncached input plus cache creation plus output as the CLI
+//! reports them — cache reads excluded. An agentic reviewer re-reads its context
 //! through the cache on every turn; counting those would spend the whole attempt cap on
 //! bookkeeping. Codex reports cached reads inside `input_tokens`, so the two adapters differ
 //! exactly where their providers do.
@@ -36,7 +37,7 @@ pub struct ClaudeAdapter {
     model_flags: Vec<String>,
     prompt: String,
     timeout: Duration,
-    /// (name, value) grants for auth: CLAUDE_CONFIG_DIR, USER, HOME.
+    /// (name, value) grants for subscription/keychain auth.
     grants: Vec<(String, String)>,
 }
 
@@ -80,19 +81,22 @@ impl ClaudeAdapter {
         })
     }
 
-    /// The three auth grants. Values come from the operator's own environment, read by the
+    /// Explicit auth grants. Values come from the operator's own environment, read by the
     /// caller — this crate never reads env itself, so what reaches the child is explicit.
     pub fn with_auth(
         mut self,
-        config_dir: impl Into<String>,
+        config_dir: Option<String>,
         user: impl Into<String>,
         home: impl Into<String>,
     ) -> Self {
         self.grants = vec![
-            ("CLAUDE_CONFIG_DIR".to_string(), config_dir.into()),
             ("USER".to_string(), user.into()),
             ("HOME".to_string(), home.into()),
         ];
+        if let Some(config_dir) = config_dir {
+            self.grants
+                .push(("CLAUDE_CONFIG_DIR".to_string(), config_dir));
+        }
         self
     }
 
@@ -128,7 +132,7 @@ impl ReviewerAdapter for ClaudeAdapter {
 
         let mut runner = ModelRunner::new(sandbox_root, self.timeout);
         for (name, value) in &self.grants {
-            runner = runner.with_grant(name, value);
+            runner = runner.with_env(name, value);
         }
         let capture = runner.capture(cas, &command)?;
 
@@ -205,7 +209,9 @@ impl Envelope {
                 .get("result")
                 .and_then(|r| r.as_str())
                 .map(str::to_string),
-            cost_tokens: count("input_tokens") + count("output_tokens"),
+            cost_tokens: count("input_tokens")
+                + count("cache_creation_input_tokens")
+                + count("output_tokens"),
         }
     }
 }

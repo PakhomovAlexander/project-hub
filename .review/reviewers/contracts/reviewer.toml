@@ -1,0 +1,11 @@
+name = "contracts"
+version = "1.2.0"
+
+[runner]
+program = "codex"
+args = [
+  { value = "--model" },
+  { value = "gpt-5.6-terra" },
+  { value = "-c" },
+  { value = 'model_reasoning_effort="high"' },
+]

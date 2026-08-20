@@ -12,15 +12,16 @@
 
 use std::collections::BTreeMap;
 
-use review_core::Severity;
+use review_core::{EventType, Severity};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::cas::Cas;
 use crate::store::EventStore;
 
-pub const EVENT_FINDING_REPORTED: &str = "FindingReported@1";
-pub const EVENT_FINDING_RESOLVED: &str = "FindingResolved@1";
-pub const EVENT_GENERATION_ADVANCED: &str = "GenerationAdvanced@1";
+pub const EVENT_FINDING_REPORTED: EventType = EventType::FindingReportedV1;
+pub const EVENT_FINDING_RESOLVED: EventType = EventType::FindingResolvedV1;
+pub const EVENT_GENERATION_ADVANCED: EventType = EventType::GenerationAdvancedV1;
 
 /// The legacy status set, kept verbatim so equivalence can be checked field by field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +112,8 @@ pub struct Finding {
     pub line: Option<i64>,
     pub title: String,
     pub body: String,
+    /// The currently adopted remedy. Absent only for artifact-less legacy imports.
+    pub fix: Option<String>,
     pub confidence: Option<f64>,
     /// Every report, in arrival order — including the ones the shell harness dropped.
     pub reports: Vec<AttachedReport>,
@@ -187,50 +190,100 @@ pub struct Convergence {
 
 impl Ledger {
     /// Rebuild from the event log. The only constructor — there is no way to hand-edit state in.
-    pub fn rebuild(store: &EventStore, run_id: &str) -> Result<Ledger, crate::store::StoreError> {
+    pub fn rebuild(
+        store: &EventStore,
+        cas: &Cas,
+        run_id: &str,
+    ) -> Result<Ledger, crate::store::StoreError> {
         let mut ledger = Ledger {
             round: 1,
             ..Default::default()
         };
         for event in store.replay(run_id)? {
-            ledger.apply(&event.event_type, &event.payload, &event.artifact_refs);
+            ledger.apply(event.event_type, &event.payload, &event.artifact_refs, cas)?;
         }
         Ok(ledger)
     }
 
     /// Fold one event in. Public so an ingest can keep a live projection without re-reading the
     /// whole log after every append — the fold is the same code either way.
-    pub fn apply_event(&mut self, event: &review_core::RunEvent) {
-        self.apply(&event.event_type, &event.payload, &event.artifact_refs);
+    pub fn apply_event(
+        &mut self,
+        event: &review_core::RunEvent,
+        cas: &Cas,
+    ) -> Result<(), crate::store::StoreError> {
+        self.apply(event.event_type, &event.payload, &event.artifact_refs, cas)
     }
 
-    fn apply(&mut self, event_type: &str, payload: &Value, artifact_refs: &[String]) {
+    fn apply(
+        &mut self,
+        event_type: EventType,
+        payload: &Value,
+        artifact_refs: &[String],
+        cas: &Cas,
+    ) -> Result<(), crate::store::StoreError> {
         match event_type {
             EVENT_GENERATION_ADVANCED => {
-                if let Some(round) = payload.get("round").and_then(Value::as_u64) {
-                    self.round = round as u32;
-                }
+                let round = payload
+                    .get("round")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| malformed("GenerationAdvanced@1", "missing integer `round`"))?;
+                self.round = u32::try_from(round)
+                    .map_err(|_| malformed("GenerationAdvanced@1", "`round` exceeds u32"))?;
             }
-            EVENT_FINDING_REPORTED => self.apply_report(payload, artifact_refs),
-            EVENT_FINDING_RESOLVED => self.apply_resolution(payload),
+            EVENT_FINDING_REPORTED => self.apply_report(payload, artifact_refs, cas)?,
+            EVENT_FINDING_RESOLVED => self.apply_resolution(payload)?,
             _ => {}
         }
+        Ok(())
     }
 
-    fn apply_report(&mut self, payload: &Value, artifact_refs: &[String]) {
-        let key = payload["key"].as_str().unwrap_or_default().to_string();
-        let round = payload["round"].as_u64().unwrap_or(1) as u32;
-        let source = payload["source"].as_str().unwrap_or_default().to_string();
-        let severity = payload["severity"]
-            .as_str()
-            .and_then(parse_severity)
-            .unwrap_or(Severity::Minor);
-        let report_id = artifact_refs.first().cloned().unwrap_or_else(|| {
-            payload["report_id"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string()
-        });
+    fn apply_report(
+        &mut self,
+        payload: &Value,
+        artifact_refs: &[String],
+        cas: &Cas,
+    ) -> Result<(), crate::store::StoreError> {
+        let key = required_string(payload, "FindingReported@1", "key")?;
+        let source = required_string(payload, "FindingReported@1", "source")?;
+        let round = required_round(payload, "FindingReported@1")?;
+        let imported = payload.get("imported").and_then(Value::as_bool) == Some(true);
+        let (report_id, report) = match (artifact_refs, imported) {
+            ([report_id], false) => {
+                if payload.get("report_id").and_then(Value::as_str) != Some(report_id) {
+                    return Err(malformed(
+                        "FindingReported@1",
+                        "payload `report_id` does not match its sole artifact reference",
+                    ));
+                }
+                let value = cas.get_json(report_id).map_err(|error| {
+                    crate::store::StoreError::Artifact(format!(
+                        "FindingReported@1 references {report_id}: {error}"
+                    ))
+                })?;
+                (
+                    report_id.clone(),
+                    ReportProjection::from_artifact(report_id, &value)?,
+                )
+            }
+            ([], true) => (
+                String::new(),
+                ReportProjection::from_legacy_payload(payload)?,
+            ),
+            ([], false) => {
+                return Err(malformed(
+                    "FindingReported@1",
+                    "artifact-less reports require `imported: true`",
+                ));
+            }
+            _ => {
+                return Err(malformed(
+                    "FindingReported@1",
+                    "expected exactly one report artifact, or none for an explicit import",
+                ));
+            }
+        };
+        let severity = report.severity;
 
         let attached = AttachedReport {
             report_id,
@@ -250,11 +303,12 @@ impl Ledger {
                     news_round: round,
                     last_seen_round: round,
                     source,
-                    file: payload["file"].as_str().unwrap_or_default().to_string(),
-                    line: payload["line"].as_i64(),
-                    title: payload["title"].as_str().unwrap_or_default().to_string(),
-                    body: payload["body"].as_str().unwrap_or_default().to_string(),
-                    confidence: payload["confidence"].as_f64(),
+                    file: report.file,
+                    line: report.line,
+                    title: report.title,
+                    body: report.body,
+                    fix: report.fix,
+                    confidence: report.confidence,
                     reports: vec![attached],
                     history: vec![Transition {
                         round,
@@ -263,7 +317,7 @@ impl Ledger {
                     }],
                 },
             );
-            return;
+            return Ok(());
         };
 
         // Every report is kept, whatever the projection then decides about it.
@@ -290,11 +344,11 @@ impl Ledger {
             TransitionKind::Reopened => {
                 existing.status = Status::Open;
                 existing.news_round = round;
-                adopt(existing, payload, severity, &source);
+                adopt(existing, &report, &source);
             }
             TransitionKind::Escalated | TransitionKind::AdoptedWhileDeclined => {
                 existing.news_round = round;
-                adopt(existing, payload, severity, &source);
+                adopt(existing, &report, &source);
             }
             _ => {}
         }
@@ -310,22 +364,39 @@ impl Ledger {
             _ => None,
         };
         existing.history.push(Transition { round, kind, note });
+        Ok(())
     }
 
-    fn apply_resolution(&mut self, payload: &Value) {
-        let key = payload["key"].as_str().unwrap_or_default();
-        let Some(status) = payload["status"].as_str().and_then(Status::parse) else {
-            return;
+    fn apply_resolution(&mut self, payload: &Value) -> Result<(), crate::store::StoreError> {
+        let key = required_string(payload, "FindingResolved@1", "key")?;
+        let status_name = required_string(payload, "FindingResolved@1", "status")?;
+        let status = Status::parse(&status_name).ok_or_else(|| {
+            malformed(
+                "FindingResolved@1",
+                &format!("invalid status `{status_name}`"),
+            )
+        })?;
+        let round = required_round(payload, "FindingResolved@1")?;
+        let note = match payload.get("note") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(note)) => Some(note.clone()),
+            Some(_) => {
+                return Err(malformed(
+                    "FindingResolved@1",
+                    "`note` must be a string or null",
+                ));
+            }
         };
-        let round = payload["round"].as_u64().unwrap_or(self.round as u64) as u32;
-        if let Some(finding) = self.findings.get_mut(key) {
-            finding.status = status;
-            finding.history.push(Transition {
-                round,
-                kind: TransitionKind::Resolved(status),
-                note: payload["note"].as_str().map(str::to_string),
-            });
-        }
+        let finding = self.findings.get_mut(&key).ok_or_else(|| {
+            malformed("FindingResolved@1", &format!("unknown finding key `{key}`"))
+        })?;
+        finding.status = status;
+        finding.history.push(Transition {
+            round,
+            kind: TransitionKind::Resolved(status),
+            note,
+        });
+        Ok(())
     }
 
     /// Findings in first-reported order, which is the order the shell ledger's file had.
@@ -384,16 +455,127 @@ impl Ledger {
     }
 }
 
-fn adopt(finding: &mut Finding, payload: &Value, severity: Severity, source: &str) {
-    finding.severity = severity;
+struct ReportProjection {
+    severity: Severity,
+    file: String,
+    line: Option<i64>,
+    title: String,
+    body: String,
+    fix: Option<String>,
+    confidence: Option<f64>,
+}
+
+impl ReportProjection {
+    fn from_artifact(report_id: &str, value: &Value) -> Result<Self, crate::store::StoreError> {
+        let required = |field: &str| {
+            value[field]
+                .as_str()
+                .filter(|text| !text.trim().is_empty())
+                .ok_or_else(|| {
+                    crate::store::StoreError::Artifact(format!(
+                        "report {report_id} has no non-empty string `{field}`"
+                    ))
+                })
+        };
+        let severity_name = required("severity")?;
+        let severity = parse_severity(severity_name).ok_or_else(|| {
+            crate::store::StoreError::Artifact(format!(
+                "report {report_id} has invalid severity `{severity_name}`"
+            ))
+        })?;
+        let file = value["file"].as_str().ok_or_else(|| {
+            crate::store::StoreError::Artifact(format!("report {report_id} has no string `file`"))
+        })?;
+        let line = match value.get("line") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_i64().filter(|line| *line > 0).ok_or_else(|| {
+                crate::store::StoreError::Artifact(format!(
+                    "report {report_id} has invalid positive integer `line`"
+                ))
+            })?),
+        };
+        let confidence = match value.get("confidence") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_f64()
+                    .filter(|value| (0.0..=1.0).contains(value))
+                    .ok_or_else(|| {
+                        crate::store::StoreError::Artifact(format!(
+                            "report {report_id} has invalid `confidence` outside [0,1]"
+                        ))
+                    })?,
+            ),
+        };
+        Ok(Self {
+            severity,
+            file: if file.trim().is_empty() {
+                "(change-wide)".to_string()
+            } else {
+                file.to_string()
+            },
+            line,
+            title: required("title")?.to_string(),
+            body: required("body")?.to_string(),
+            fix: Some(required("fix")?.to_string()),
+            confidence,
+        })
+    }
+
+    fn from_legacy_payload(payload: &Value) -> Result<Self, crate::store::StoreError> {
+        let severity_name = required_string(payload, "imported FindingReported@1", "severity")?;
+        let severity = parse_severity(&severity_name).ok_or_else(|| {
+            malformed(
+                "imported FindingReported@1",
+                &format!("invalid severity `{severity_name}`"),
+            )
+        })?;
+        Ok(Self {
+            severity,
+            file: required_string(payload, "imported FindingReported@1", "file")?,
+            line: payload["line"].as_i64(),
+            title: required_string(payload, "imported FindingReported@1", "title")?,
+            body: required_string(payload, "imported FindingReported@1", "body")?,
+            fix: None,
+            confidence: payload["confidence"].as_f64(),
+        })
+    }
+}
+
+fn malformed(event: &str, detail: &str) -> crate::store::StoreError {
+    crate::store::StoreError::Conflict(format!("malformed {event}: {detail}"))
+}
+
+fn required_string(
+    payload: &Value,
+    event: &str,
+    field: &str,
+) -> Result<String, crate::store::StoreError> {
+    let value = payload
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| malformed(event, &format!("missing non-empty string `{field}`")))?;
+    Ok(value.to_string())
+}
+
+fn required_round(payload: &Value, event: &str) -> Result<u32, crate::store::StoreError> {
+    let round = payload
+        .get("round")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| malformed(event, "missing integer `round`"))?;
+    u32::try_from(round).map_err(|_| malformed(event, "`round` exceeds u32"))
+}
+
+fn adopt(finding: &mut Finding, report: &ReportProjection, source: &str) {
+    finding.severity = report.severity;
     finding.source = source.to_string();
-    if let Some(line) = payload["line"].as_i64() {
-        finding.line = Some(line);
-    }
-    if let Some(body) = payload["body"].as_str() {
-        finding.body = body.to_string();
-    }
-    finding.confidence = payload["confidence"].as_f64();
+    finding.file.clone_from(&report.file);
+    finding.line = report.line;
+    finding.title.clone_from(&report.title);
+    finding.body.clone_from(&report.body);
+    finding.fix.clone_from(&report.fix);
+    finding.confidence = report.confidence;
 }
 
 fn parse_severity(s: &str) -> Option<Severity> {

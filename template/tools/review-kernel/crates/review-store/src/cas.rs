@@ -34,6 +34,7 @@ use crate::canonical;
 pub enum CasError {
     Io(std::io::Error),
     Canonical(canonical::CanonicalError),
+    InvalidDigest(String),
     /// The stored bytes do not hash to the digest they are filed under.
     Corrupt {
         digest: String,
@@ -48,6 +49,9 @@ impl std::fmt::Display for CasError {
         match self {
             CasError::Io(e) => write!(f, "cas io: {e}"),
             CasError::Canonical(e) => write!(f, "cas canonicalization: {e}"),
+            CasError::InvalidDigest(digest) => {
+                write!(f, "invalid content digest `{digest}`")
+            }
             CasError::Corrupt { digest } => {
                 write!(f, "cas object does not match its digest: {digest}")
             }
@@ -73,7 +77,10 @@ impl From<canonical::CanonicalError> for CasError {
 pub struct Cas {
     root: PathBuf,
     /// Objects renamed into place but not yet synced. Drained by [`Cas::flush`].
-    pending: Mutex<Vec<PathBuf>>,
+    pending: Mutex<BTreeSet<PathBuf>>,
+    /// Objects whose bytes and publication chain this process has already synced. CAS objects
+    /// are immutable, so repeated references need neither another hash pass nor another fsync.
+    durable: Mutex<BTreeSet<PathBuf>>,
 }
 
 impl Cas {
@@ -82,7 +89,8 @@ impl Cas {
         fs::create_dir_all(root.join("objects"))?;
         Ok(Self {
             root,
-            pending: Mutex::new(Vec::new()),
+            pending: Mutex::new(BTreeSet::new()),
+            durable: Mutex::new(BTreeSet::new()),
         })
     }
 
@@ -98,6 +106,20 @@ impl Cas {
         let digest = canonical::blob_content_id(bytes);
         let final_path = self.path_for(&digest);
         if final_path.exists() {
+            // Durability is cacheable, integrity is not: an external mutation after a prior
+            // publication must still be detected before idempotent put accepts this object.
+            self.get(&digest)?;
+            if !self
+                .durable
+                .lock()
+                .expect("cas durable")
+                .contains(&final_path)
+            {
+                // A reopened CAS cannot know whether an existing object and its directory entry
+                // reached stable storage. Re-pend verified bytes so the next referencing event
+                // establishes that durability instead of trusting existence alone.
+                self.pending.lock().expect("cas pending").insert(final_path);
+            }
             return Ok(digest);
         }
         let dir = final_path.parent().expect("object path has a parent");
@@ -115,7 +137,7 @@ impl Cas {
         fs::rename(&temp_path, &final_path)?;
         // Durability is deferred, not skipped: the object is pending until `flush`, and no
         // event may reference it before then.
-        self.pending.lock().expect("cas pending").push(final_path);
+        self.pending.lock().expect("cas pending").insert(final_path);
         Ok(digest)
     }
 
@@ -132,14 +154,29 @@ impl Cas {
         if pending.is_empty() {
             return Ok(());
         }
-        let mut dirs: BTreeSet<&Path> = BTreeSet::new();
+        let mut dirs = BTreeSet::new();
         for path in pending.iter() {
             if let Some(dir) = path.parent() {
-                dirs.insert(dir);
+                dirs.insert(dir.to_path_buf());
             }
         }
+        // Sync every publication ancestor. Syncing only the shard directory does not make a
+        // newly created `objects/ab` entry durable in `objects`, and the same applies to the
+        // initial `objects` entry in the CAS root.
+        dirs.insert(self.root.join("objects"));
+        dirs.insert(self.root.clone());
+        let root_parent = self
+            .root
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        dirs.insert(root_parent.to_path_buf());
         sync_concurrently(pending.iter().map(PathBuf::as_path), fsync)?;
-        sync_concurrently(dirs.into_iter(), fsync)?;
+        sync_concurrently(dirs.iter().map(PathBuf::as_path), fsync)?;
+        self.durable
+            .lock()
+            .expect("cas durable")
+            .extend(pending.iter().cloned());
         pending.clear();
         Ok(())
     }
@@ -147,11 +184,17 @@ impl Cas {
     /// Store a JSON payload in its canonical form. The digest is then the payload's identity,
     /// independent of how the producer happened to order its fields.
     pub fn put_json(&self, value: &Value) -> Result<String, CasError> {
+        review_core::json::admit(value).map_err(|error| {
+            CasError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
         let bytes = canonical::canonicalize(value)?;
         self.put(&bytes)
     }
 
     pub fn get(&self, digest: &str) -> Result<Vec<u8>, CasError> {
+        if !valid_digest(digest) {
+            return Err(CasError::InvalidDigest(digest.to_string()));
+        }
         let path = self.path_for(digest);
         let bytes = fs::read(&path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => CasError::NotFound {
@@ -175,9 +218,34 @@ impl Cas {
         })
     }
 
-    pub fn contains(&self, digest: &str) -> bool {
-        self.path_for(digest).exists()
+    /// Verify an object and schedule its bytes and directory entries for the next publication
+    /// barrier. A reopened process cannot infer durability from existence, so every new event
+    /// reference must pass through this method before commit.
+    pub fn prepare_for_publication(&self, digest: &str) -> Result<(), CasError> {
+        let path = self.path_for(digest);
+        // Hash verification is mandatory for every new reference. The cache below suppresses
+        // redundant fsyncs only; it must never turn existence into an integrity assertion.
+        self.get(digest)?;
+        if self.durable.lock().expect("cas durable").contains(&path) {
+            return Ok(());
+        }
+        self.pending.lock().expect("cas pending").insert(path);
+        Ok(())
     }
+
+    pub fn contains(&self, digest: &str) -> bool {
+        self.get(digest).is_ok()
+    }
+}
+
+fn valid_digest(digest: &str) -> bool {
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// `fsync(2)` on a file or directory — the log's durability grade, not `F_FULLFSYNC`. On a

@@ -1,0 +1,11 @@
+name = "cross"
+version = "1.0.0"
+
+[runner]
+program = "claude"
+args = [
+  { value = "--model" },
+  { value = "opus" },
+  { value = "--effort" },
+  { value = "max" },
+]

@@ -11,11 +11,11 @@
 
 use std::path::Path;
 
-use review_core::RunEvent;
+use review_core::{EventType, RunEvent};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
-use crate::cas::Cas;
+use crate::cas::{Cas, CasError};
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -29,6 +29,8 @@ pub enum StoreError {
     Conflict(String),
     /// The CAS could not make a referenced object durable.
     Durability(String),
+    /// A referenced artifact required for replay was missing or malformed.
+    Artifact(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -44,6 +46,7 @@ impl std::fmt::Display for StoreError {
             StoreError::Durability(what) => {
                 write!(f, "a referenced artifact could not be made durable: {what}")
             }
+            StoreError::Artifact(what) => write!(f, "event store artifact: {what}"),
         }
     }
 }
@@ -64,8 +67,9 @@ impl From<serde_json::Error> for StoreError {
 
 /// What an appender supplies. `event_id` and `sequence` are the store's to assign — a caller
 /// that could choose its own sequence could rewrite history by racing.
+#[derive(Debug, Clone)]
 pub struct NewEvent {
-    pub event_type: String,
+    pub event_type: EventType,
     pub occurred_at: String,
     pub node_id: Option<String>,
     pub attempt_id: Option<String>,
@@ -76,9 +80,9 @@ pub struct NewEvent {
 }
 
 impl NewEvent {
-    pub fn new(event_type: impl Into<String>, payload: Value) -> Self {
+    pub fn new(event_type: EventType, payload: Value) -> Self {
         Self {
-            event_type: event_type.into(),
+            event_type,
             // Deliberately fixed: this store has no clock of its own, and nothing in replay may
             // read this field. A caller that wants a real timestamp passes one.
             occurred_at: "1970-01-01T00:00:00Z".to_string(),
@@ -175,20 +179,54 @@ impl EventStore {
         cas: &Cas,
         event: NewEvent,
     ) -> Result<RunEvent, StoreError> {
-        for digest in &event.artifact_refs {
-            if !cas.contains(digest) {
-                return Err(StoreError::DanglingArtifact {
-                    digest: digest.clone(),
-                });
+        self.append_batch(run_id, cas, std::slice::from_ref(&event))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| StoreError::Conflict("single-event append produced no event".into()))
+    }
+
+    /// Atomically append an ordered event batch.
+    ///
+    /// Every payload and artifact reference is validated before the publication barrier. The
+    /// CAS is flushed once, then every row lands in one FULL-synchronous SQLite transaction, so
+    /// replay observes the complete logical effect or none of it.
+    pub fn append_batch(
+        &mut self,
+        run_id: &str,
+        cas: &Cas,
+        events: &[NewEvent],
+    ) -> Result<Vec<RunEvent>, StoreError> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut has_artifacts = false;
+        for event in events {
+            review_core::json::admit(&event.payload)
+                .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
+            review_core::event::validate_event_payload(event.event_type, &event.payload)
+                .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
+            for digest in &event.artifact_refs {
+                has_artifacts = true;
+                cas.prepare_for_publication(digest)
+                    .map_err(|error| match error {
+                        CasError::NotFound { .. } | CasError::InvalidDigest(_) => {
+                            StoreError::DanglingArtifact {
+                                digest: digest.clone(),
+                            }
+                        }
+                        other => StoreError::Artifact(format!(
+                            "referenced artifact {digest} failed verification: {other}"
+                        )),
+                    })?;
             }
         }
-        if !event.artifact_refs.is_empty() {
+        if has_artifacts {
             cas.flush()
                 .map_err(|e| StoreError::Durability(e.to_string()))?;
         }
 
         let tx = self.conn.transaction()?;
-        let next: i64 = tx
+        let first: i64 = tx
             .query_row(
                 "SELECT COALESCE(MAX(sequence) + 1, 0) FROM events WHERE run_id = ?1",
                 params![run_id],
@@ -196,52 +234,59 @@ impl EventStore {
             )
             .optional()?
             .unwrap_or(0);
-
-        let event_id = derive_event_id(run_id, next);
-        let refs = serde_json::to_string(&event.artifact_refs)?;
-        let payload = serde_json::to_string(&event.payload)?;
-        tx.execute(
-            "INSERT INTO events
-               (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
-                causation_id, correlation_id, artifact_refs, payload)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                run_id,
-                next,
+        let mut appended = Vec::with_capacity(events.len());
+        for (offset, event) in events.iter().enumerate() {
+            let offset = i64::try_from(offset)
+                .map_err(|_| StoreError::Conflict("event batch is too large".into()))?;
+            let next = first
+                .checked_add(offset)
+                .ok_or_else(|| StoreError::Conflict("event sequence overflow".into()))?;
+            let event_id = derive_event_id(run_id, next);
+            let refs = serde_json::to_string(&event.artifact_refs)?;
+            let payload = serde_json::to_string(&event.payload)?;
+            tx.execute(
+                "INSERT INTO events
+                   (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    run_id,
+                    next,
+                    event_id,
+                    event.event_type.as_str(),
+                    event.occurred_at,
+                    event.node_id,
+                    event.attempt_id,
+                    event.causation_id,
+                    event.correlation_id,
+                    refs,
+                    payload,
+                ],
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::SqliteFailure(err, _)
+                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    StoreError::Conflict(format!("sequence {next} already taken for run {run_id}"))
+                }
+                other => StoreError::Sqlite(other),
+            })?;
+            appended.push(RunEvent {
                 event_id,
-                event.event_type,
-                event.occurred_at,
-                event.node_id,
-                event.attempt_id,
-                event.causation_id,
-                event.correlation_id,
-                refs,
-                payload,
-            ],
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::SqliteFailure(err, _)
-                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-            {
-                StoreError::Conflict(format!("sequence {next} already taken for run {run_id}"))
-            }
-            other => StoreError::Sqlite(other),
-        })?;
+                run_id: run_id.to_string(),
+                sequence: next as u64,
+                event_type: event.event_type,
+                occurred_at: event.occurred_at.clone(),
+                node_id: event.node_id.clone(),
+                attempt_id: event.attempt_id.clone(),
+                causation_id: event.causation_id.clone(),
+                correlation_id: event.correlation_id.clone(),
+                artifact_refs: event.artifact_refs.clone(),
+                payload: event.payload.clone(),
+            });
+        }
         tx.commit()?;
-
-        Ok(RunEvent {
-            event_id,
-            run_id: run_id.to_string(),
-            sequence: next as u64,
-            event_type: event.event_type,
-            occurred_at: event.occurred_at,
-            node_id: event.node_id,
-            attempt_id: event.attempt_id,
-            causation_id: event.causation_id,
-            correlation_id: event.correlation_id,
-            artifact_refs: event.artifact_refs,
-            payload: event.payload,
-        })
+        Ok(appended)
     }
 
     /// Every event of a run, in sequence order. This is the only read replay needs.
@@ -254,12 +299,22 @@ impl EventStore {
         let rows = stmt.query_map(params![run_id], |row| {
             let refs: String = row.get(8)?;
             let payload: String = row.get(9)?;
+            let sequence: i64 = row.get(1)?;
             Ok((
                 RunEvent {
                     event_id: row.get(0)?,
                     run_id: run_id.to_string(),
-                    sequence: row.get::<_, i64>(1)? as u64,
-                    event_type: row.get(2)?,
+                    sequence: 0,
+                    event_type: row
+                        .get::<_, String>(2)?
+                        .parse::<EventType>()
+                        .map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?,
                     occurred_at: row.get(3)?,
                     node_id: row.get(4)?,
                     attempt_id: row.get(5)?,
@@ -268,18 +323,38 @@ impl EventStore {
                     artifact_refs: Vec::new(),
                     payload: Value::Null,
                 },
+                sequence,
                 refs,
                 payload,
             ))
         })?;
         let mut out = Vec::new();
-        for row in rows {
+        for (expected_sequence, row) in (0u64..).zip(rows) {
             // A row that does not parse is refused, never degraded: replaying it as an empty
             // event would rebuild a different state than the run committed, silently — the
             // exact failure the publication ordering exists to prevent, on the read side.
-            let (mut event, refs, payload) = row?;
+            let (mut event, raw_sequence, refs, payload) = row?;
+            let sequence = u64::try_from(raw_sequence).map_err(|_| {
+                StoreError::Conflict(format!("negative sequence {raw_sequence} in run {run_id}"))
+            })?;
+            if sequence != expected_sequence {
+                return Err(StoreError::Conflict(format!(
+                    "event sequence gap in run {run_id}: expected {expected_sequence}, found {sequence}"
+                )));
+            }
+            let expected_id = derive_event_id(run_id, raw_sequence);
+            if event.event_id != expected_id {
+                return Err(StoreError::Conflict(format!(
+                    "event {} has invalid derived id; expected {expected_id}",
+                    event.event_id
+                )));
+            }
+            event.sequence = sequence;
             event.artifact_refs = serde_json::from_str(&refs).map_err(StoreError::Json)?;
             event.payload = serde_json::from_str(&payload).map_err(StoreError::Json)?;
+            review_core::event::validate_event_payload(event.event_type, &event.payload).map_err(
+                |error| StoreError::Conflict(format!("invalid replayed event payload: {error}")),
+            )?;
             out.push(event);
         }
         Ok(out)
@@ -328,7 +403,11 @@ mod tests {
         let (_dir, mut store, cas) = fixture();
         for i in 0..5 {
             let event = store
-                .append("run-a", &cas, NewEvent::new("Thing@1", json!({ "i": i })))
+                .append(
+                    "run-a",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({ "i": i })),
+                )
                 .unwrap();
             assert_eq!(event.sequence, i as u64);
         }
@@ -343,10 +422,18 @@ mod tests {
     fn runs_do_not_share_a_sequence_space() {
         let (_dir, mut store, cas) = fixture();
         store
-            .append("run-a", &cas, NewEvent::new("Thing@1", json!({})))
+            .append(
+                "run-a",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({})),
+            )
             .unwrap();
         let b = store
-            .append("run-b", &cas, NewEvent::new("Thing@1", json!({})))
+            .append(
+                "run-b",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({})),
+            )
             .unwrap();
         assert_eq!(b.sequence, 0);
     }
@@ -359,7 +446,8 @@ mod tests {
             .append(
                 "run-a",
                 &cas,
-                NewEvent::new("Thing@1", json!({})).referencing(vec![missing.clone()]),
+                NewEvent::new(EventType::SourceCapturedV1, json!({}))
+                    .referencing(vec![missing.clone()]),
             )
             .unwrap_err();
         assert!(matches!(err, StoreError::DanglingArtifact { .. }));
@@ -372,7 +460,7 @@ mod tests {
                 .append(
                     "run-a",
                     &cas,
-                    NewEvent::new("Thing@1", json!({})).referencing(vec![digest])
+                    NewEvent::new(EventType::SourceCapturedV1, json!({})).referencing(vec![digest])
                 )
                 .is_ok()
         );
@@ -382,7 +470,11 @@ mod tests {
     fn event_ids_are_derived_so_replay_reproduces_them() {
         let (_dir, mut store, cas) = fixture();
         let first = store
-            .append("run-a", &cas, NewEvent::new("Thing@1", json!({})))
+            .append(
+                "run-a",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({})),
+            )
             .unwrap();
         assert_eq!(first.event_id, derive_event_id("run-a", 0));
         assert_ne!(derive_event_id("run-a", 0), derive_event_id("run-b", 0));
@@ -396,15 +488,27 @@ mod tests {
         {
             let mut store = EventStore::open(&path).unwrap();
             store
-                .append("run-a", &cas, NewEvent::new("Thing@1", json!({ "n": 0 })))
+                .append(
+                    "run-a",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({ "n": 0 })),
+                )
                 .unwrap();
             store
-                .append("run-a", &cas, NewEvent::new("Thing@1", json!({ "n": 1 })))
+                .append(
+                    "run-a",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({ "n": 1 })),
+                )
                 .unwrap();
         }
         let mut store = EventStore::open(&path).unwrap();
         let third = store
-            .append("run-a", &cas, NewEvent::new("Thing@1", json!({ "n": 2 })))
+            .append(
+                "run-a",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({ "n": 2 })),
+            )
             .unwrap();
         assert_eq!(third.sequence, 2);
         assert_eq!(store.replay("run-a").unwrap().len(), 3);
