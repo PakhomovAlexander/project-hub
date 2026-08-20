@@ -9,9 +9,10 @@
 # directory beside its pipeline, and the loader refuses a symlink inside a package. They may
 # drift from template/.review/reviewers/ on purpose — this repo's review is its own.
 # Re-lock after editing either:
-#   cargo run --manifest-path template/tools/review-kernel/Cargo.toml -p review-config \
-#     --example lock -- .review/reviewers architecture contracts cross performance \
-#     > .review/review.lock
+#   tmp=$(mktemp) && cargo +1.88.0 run --manifest-path \
+#     template/tools/review-kernel/Cargo.toml -p review-config --example lock -- \
+#     .review/reviewers architecture contracts cross performance > "$tmp" && \
+#     mv "$tmp" .review/review.lock
 version = 2
 
 [subject]

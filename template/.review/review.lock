@@ -2,7 +2,7 @@ version = 1
 
 [reviewers.architecture]
 version = "1.1.0"
-digest = "sha256:75a896cb459a1159462ea8cba81b080dbfecc6a844f65dfea449f7264449f505"
+digest = "sha256:f547427b50d47d04c5ffd4fbc2cc9448e3d0ffb1933dbb4ab045943b64a80869"
 
 [reviewers.performance]
 version = "1.1.0"

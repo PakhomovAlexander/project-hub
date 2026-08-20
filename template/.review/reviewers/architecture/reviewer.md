@@ -8,8 +8,8 @@ Look for, in order of importance:
 
 1. Boundaries: responsibilities that leak across module or crate lines, abstractions that
    force their callers to know their internals, dependency directions that will invert badly.
-2. Invariants: state that two components both believe they own; assumptions a change makes
-   that the code it calls does not actually guarantee.
+2. Invariants: state that two components both believe they own; assumptions the implementation
+   makes that the code it calls does not actually guarantee.
 3. Composition: whether the change extends the existing shape of the system or bolts a second
    shape onto it; duplicated concepts that will drift.
 4. Contracts: public interfaces changed without their consumers, error paths that lose
