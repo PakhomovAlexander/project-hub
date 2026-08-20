@@ -114,5 +114,5 @@ run = 2000000
 # ---------------------------------------------------------------- convergence
 [convergence]
 clean_rounds = 2
-max_rounds = 3
+max_rounds = 4
 gate = "major"

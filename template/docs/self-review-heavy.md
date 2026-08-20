@@ -101,7 +101,7 @@ dispute, or drop each carried prior finding — a dispute lands the finding as `
 
 Reviewers: `architecture` (arch) and `performance` (perf). Defaults from
 [`heavy.toml`](../.review/pipelines/heavy.toml): convergence gate `major`,
-`clean_rounds = 2`, `max_rounds = 3`. Keys below are illustrative.
+`clean_rounds = 2`, `max_rounds = 4`. Keys below are illustrative.
 
 **Round 1.** The gate passes. Reports, admitted arch-first (canonical order):
 
