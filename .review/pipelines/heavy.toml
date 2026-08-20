@@ -9,8 +9,8 @@
 # directory beside its pipeline, and the loader refuses a symlink inside a package. They may
 # drift from template/.review/reviewers/ on purpose — this repo's review is its own.
 # Re-lock after editing either:
-#   cd tools/review-kernel && cargo run -p review-config --example lock -- \
-#     ../../.review/reviewers architecture performance > ../../.review/review.lock
+#   cd template/tools/review-kernel && cargo run -p review-config --example lock -- \
+#     ../../../.review/reviewers architecture contracts cross performance > ../../../.review/review.lock
 version = 1
 
 # ---------------------------------------------------------------- gate checks
@@ -58,7 +58,7 @@ args = [
 [[nodes]]
 id = "gate"
 kind = "gate"
-outputs = ["decision"]
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 # The campaign's prior findings, delivered to reviewers through a wired port rather than from
 # ambient kernel state. In round 1 it emits an empty set; from round 2 on it carries what the
@@ -66,35 +66,68 @@ outputs = ["decision"]
 [[nodes]]
 id = "generation"
 kind = "generation"
-outputs = ["findings"]
+outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 [[nodes]]
 id = "architecture"
 kind = "reviewer"
-inputs = ["gate", "prior_findings"]
-outputs = ["result"]
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 package = "architecture"
 
 [[nodes]]
 id = "performance"
 kind = "reviewer"
-inputs = ["gate", "prior_findings"]
-outputs = ["result"]
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 package = "performance"
 
 [[nodes]]
+id = "contracts"
+kind = "reviewer"
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+package = "contracts"
+
+[[nodes]]
+id = "cross"
+kind = "reviewer"
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+package = "cross"
+
+[[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["architecture", "performance"]
-outputs = ["reports"]
+inputs = [
+  { name = "architecture", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "contracts", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "cross", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "performance", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
-outputs = ["findings"]
+inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 # ---------------------------------------------------------------------- edges
 [[edges]]
@@ -118,6 +151,30 @@ from = { node = "architecture", port = "result" }
 to = { node = "gather", port = "architecture" }
 
 [[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "contracts", port = "prior_findings" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "cross", port = "prior_findings" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "contracts", port = "gate" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "cross", port = "gate" }
+
+[[edges]]
+from = { node = "contracts", port = "result" }
+to = { node = "gather", port = "contracts" }
+
+[[edges]]
+from = { node = "cross", port = "result" }
+to = { node = "gather", port = "cross" }
+
+[[edges]]
 from = { node = "performance", port = "result" }
 to = { node = "gather", port = "performance" }
 
@@ -130,8 +187,8 @@ to = { node = "ledger", port = "reports" }
 # attempt charges.
 [budgets]
 unit = "tokens"
-attempt = 300000
-run = 2000000
+attempt = 200000
+run = 800000
 
 # ---------------------------------------------------------------- convergence
 [convergence]

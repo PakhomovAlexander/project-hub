@@ -27,7 +27,7 @@ args = [{ value = "scripts/verify.sh" }]
 [[nodes]]
 id = "gate"
 kind = "gate"
-outputs = ["decision"]
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 # The campaign's prior findings, delivered to reviewers through a wired port rather than from
 # ambient kernel state. In round 1 it emits an empty set; from round 2 on it carries what the
@@ -35,35 +35,44 @@ outputs = ["decision"]
 [[nodes]]
 id = "generation"
 kind = "generation"
-outputs = ["findings"]
+outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 [[nodes]]
 id = "architecture"
 kind = "reviewer"
-inputs = ["gate", "prior_findings"]
-outputs = ["result"]
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 package = "architecture"
 
 [[nodes]]
 id = "performance"
 kind = "reviewer"
-inputs = ["gate", "prior_findings"]
-outputs = ["result"]
+inputs = [
+  { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 package = "performance"
 
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["architecture", "performance"]
-outputs = ["reports"]
+inputs = [
+  { name = "architecture", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "performance", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
-outputs = ["findings"]
+inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
 # ---------------------------------------------------------------------- edges
 [[edges]]
