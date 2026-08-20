@@ -108,6 +108,21 @@ grep -q -- '+1.88.0 run --locked --manifest-path tools/review-kernel/Cargo.toml'
 grep -q -- '.review/reviewers architecture performance' "$WORK/cargo.args" \
   || { echo "FAIL: reviewer re-lock did not discover every package" >&2; exit 1; }
 
+EMPTY_REVIEW="$WORK/empty-review"
+mkdir -p "$EMPTY_REVIEW/reviewers"
+printf 'valid lock must survive\n' > "$EMPTY_REVIEW/review.lock"
+cp "$EMPTY_REVIEW/review.lock" "$WORK/empty-review.expected"
+rm -f "$WORK/cargo.args"
+if CARGO_LOG="$WORK/cargo.args" CARGO_LOCK_SOURCE="$EXPECTED_LOCK" \
+  PATH="$FAKE_BIN:$PATH" make -s -C "$HUB" review-kernel-lock RK_REVIEW="$EMPTY_REVIEW"; then
+  echo "FAIL: reviewer re-lock accepted an empty package registry" >&2
+  exit 1
+fi
+cmp -s "$WORK/empty-review.expected" "$EMPTY_REVIEW/review.lock" \
+  || { echo "FAIL: empty discovery replaced the valid lock" >&2; exit 1; }
+[ ! -e "$WORK/cargo.args" ] \
+  || { echo "FAIL: empty discovery invoked Cargo" >&2; exit 1; }
+
 # --- 5. the update must have done exactly the right things ----------------------------
 grep -q 'template-v2 machinery marker' "$HUB/scripts/worktree.sh" \
   || { echo "FAIL: machinery change did not land" >&2; exit 1; }

@@ -233,7 +233,9 @@ make review-kernel-lock
 ```
 
 The target discovers every package, uses the pinned Rust dependency lock, and replaces the
-review lock atomically. A digest mismatch at load is fatal — an unpinned or tampered
+review lock atomically. For an onboarded repository, run
+`make review-kernel-lock RK_REVIEW=<target-repo>/.review` from the hub root. A digest mismatch
+at load is fatal — an unpinned or tampered
 prompt cannot silently run. A checked-in test
 (`crates/review-config/tests/definition.rs`) loads this repo's own pipeline through its
 lockfile on every test run, so forgetting to re-lock fails CI, not a live review.
