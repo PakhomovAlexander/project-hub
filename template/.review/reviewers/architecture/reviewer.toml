@@ -1,5 +1,6 @@
 name = "architecture"
 version = "1.1.0"
+subjects = ["diff", "whole-tree"]
 
 # Opus at maximum reasoning — set the model and effort your project wants reviews run at.
 # The prompt is reviewer.md, composed by the adapter; everything in this package is under the

@@ -13,6 +13,9 @@
 #     ../../../.review/reviewers architecture contracts cross performance > ../../../.review/review.lock
 version = 1
 
+[subject]
+kind = "whole-tree"
+
 # ---------------------------------------------------------------- gate checks
 # Programs and options are trusted literals. A value derived from the change under review
 # must be marked `untrusted`, and can then never occupy an option position.
