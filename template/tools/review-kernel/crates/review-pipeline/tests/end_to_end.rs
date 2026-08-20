@@ -5,6 +5,8 @@
 //! *judgement*, which is a `command` runner emitting fixed findings; that is the one thing a
 //! test cannot supply honestly, and the one thing the kernel deliberately knows nothing about.
 
+mod support;
+
 use std::path::PathBuf;
 
 use review_check::{Arg, CheckDefinition, Command};
@@ -127,7 +129,7 @@ fn a_full_review_runs_and_lands_in_the_ledger() {
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
     let before_state = review_source_git::worktree_state(&repo).unwrap();
 
-    let kernel = Kernel::new(&cas, &mut store, "run", snapshot.manifest.clone())
+    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
         .with_checks(vec![passing_check()])
         .with_reviewer(
             "architecture",
@@ -191,7 +193,7 @@ fn a_failing_gate_means_no_reviewer_ever_runs() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = Kernel::new(&cas, &mut store, "run", snapshot.manifest.clone())
+    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
         .with_checks(vec![failing_check()])
         .with_reviewer(
             "architecture",
@@ -249,7 +251,7 @@ fn two_runs_of_the_same_review_agree() {
         let cas = Cas::open(workspace.path().join("cas")).unwrap();
         let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
         let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
-        let kernel = Kernel::new(&cas, &mut store, "run", snapshot.manifest.clone())
+        let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
             .with_checks(vec![passing_check()])
             .with_reviewer("architecture", reviewer("architecture", "A", "major"))
             .with_reviewer("performance", reviewer("performance", "B", "minor"));
@@ -347,12 +349,14 @@ gate = "major"
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
     let mut kernel =
-        Kernel::new(&cas, &mut store, "run", snapshot.manifest.clone()).with_checks(loaded.checks);
-    for (node, command) in loaded.reviewers {
-        kernel = kernel.with_reviewer(node, command);
+        Kernel::from_loaded(&cas, &mut store, "run", snapshot.manifest.clone(), &loaded)
+            .unwrap()
+            .with_checks(loaded.checks().to_vec());
+    for (node, command) in loaded.reviewers() {
+        kernel = kernel.with_reviewer(node.clone(), command.clone());
     }
 
-    let report = Scheduler::new(&loaded.plan).run(&kernel);
+    let report = loaded.run(&kernel).unwrap();
     assert!(report.complete(), "{:?}", report.outcomes);
 
     let ledger = kernel.ledger();
@@ -360,7 +364,7 @@ gate = "major"
     assert_eq!(ledger.findings()[0].title, "Unbounded loop never yields");
 
     // And the convergence policy came from the file too.
-    let convergence = kernel.convergence(loaded.convergence);
+    let convergence = kernel.convergence(*loaded.convergence());
     assert_eq!(convergence.verdict, Verdict::NotConverged);
     assert_eq!(convergence.open_blocking, 1);
 }
@@ -378,7 +382,7 @@ fn a_reviewer_named_gather_still_runs() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = Kernel::new(&cas, &mut store, "run", snapshot.manifest.clone())
+    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
         .with_checks(vec![passing_check()])
         .with_reviewer(
             "gather",
@@ -438,7 +442,7 @@ fn an_unwired_reviewer_result_never_reaches_the_ledger() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = Kernel::new(&cas, &mut store, "run", snapshot.manifest.clone())
+    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
         .with_checks(vec![passing_check()])
         .with_reviewer("architecture", reviewer("architecture", "Wired", "major"))
         .with_reviewer("sidecar", reviewer("sidecar", "Unwired", "blocker"));
@@ -504,7 +508,7 @@ fn the_event_log_tells_the_whole_story() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = Kernel::new(&cas, &mut store, "run", snapshot.manifest.clone())
+    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
         .with_checks(vec![passing_check()])
         .with_budgets(1000, 10000)
         .with_reviewer("architecture", reviewer("architecture", "A", "major"))
@@ -512,9 +516,15 @@ fn the_event_log_tells_the_whole_story() {
 
     let plan = heavy_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
-    let convergence = kernel.convergence(ConvergencePolicy::default());
-    let verdict = review_pipeline::run_verdict(&report, &convergence);
-    kernel.publish_report(&report, &verdict).unwrap();
+    kernel
+        .publish_report(&report, ConvergencePolicy::default())
+        .unwrap();
+    assert!(
+        kernel
+            .publish_report(&report, ConvergencePolicy::default())
+            .unwrap_err()
+            .contains("already published")
+    );
 
     let events = store.replay("run").unwrap();
     let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
@@ -621,7 +631,7 @@ fn a_suppressed_gather_does_not_erase_the_attempt_log() {
         "/bin/sh",
         vec![Arg::literal("-c"), Arg::literal("echo boom >&2; exit 7")],
     );
-    let kernel = Kernel::new(&cas, &mut store, "run", snapshot.manifest.clone())
+    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
         .with_checks(vec![passing_check()])
         .with_budgets(1000, 10000)
         .with_reviewer(
@@ -637,9 +647,9 @@ fn a_suppressed_gather_does_not_erase_the_attempt_log() {
         report.outcome("gather"),
         Some(NodeOutcome::Suppressed { .. })
     ));
-    let convergence = kernel.convergence(ConvergencePolicy::default());
-    let verdict = review_pipeline::run_verdict(&report, &convergence);
-    kernel.publish_report(&report, &verdict).unwrap();
+    kernel
+        .publish_report(&report, ConvergencePolicy::default())
+        .unwrap();
 
     // The paid work is in the log: both reviewers dispatched, architecture produced a result,
     // performance failed — none of it lost to the suppressed gather.

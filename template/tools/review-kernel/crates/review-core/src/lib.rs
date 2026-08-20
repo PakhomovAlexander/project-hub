@@ -19,13 +19,14 @@ pub mod json;
 pub mod legacy;
 pub mod patch;
 pub mod snapshot;
+pub mod subject;
 
 pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
     EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
     PortCardinality, RunEvent, RunFailureReasonV2, RunNodeOutcomeV2, RunNodeReportV2,
     RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity, UnknownEventType,
-    run_report_closes_round,
+    is_artifact_type, run_report_closes_round,
 };
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
@@ -33,6 +34,7 @@ pub use json::{NumericDomainError, admit};
 pub use legacy::{LegacyImportError, LegacyStageOutput};
 pub use patch::{ClaimRef, ClaimRefKind, PatchProposal};
 pub use snapshot::{Capture, SourceSnapshot, Submodule};
+pub use subject::SubjectKind;
 
 /// Contract type URIs, as they appear in an [`ArtifactEnvelope::artifact_type`].
 pub mod contract {

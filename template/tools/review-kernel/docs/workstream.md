@@ -1,17 +1,18 @@
 # Review Kernel — capability work (M0–M9)
 
-**Status:** design re-grilled against the recovered source, **zero code written, nothing
-committed.**
+**Status:** M0 and M1 complete; M2.1 Subject capability negotiation implemented. M2.1 runtime
+`Subject@1` publication remains open and lands with M2.2's authority bootstrap.
 **Goal:** `reviewctl` reviews a *change* rather than a whole tree, and every finding it produces
 can be read, triaged, and closed only through explicit evidence-bearing policy.
-**Log:** none yet — create `workstream/log.md` beside this file when the first phase concludes.
+**Log:** [`workstream/log.md`](workstream/log.md)
 
 ## Summary
 
 A second design audit on 2026-08-20 recovered the original accepted Review Kernel design from
 the originating RawTree hub and challenged the six-milestone reconstruction against it and the
 current contracts. The corrected roadmap has M0–M9 and fifteen ADR records; ADR-0003 and ADR-0004
-are superseded. No implementation has started. Begin with M0, then follow milestone order.
+are superseded. M0, M1, and M2.1 capability negotiation are complete; resume with M2.1 runtime
+Subject publication and M2.2's immutable authority bootstrap, then follow milestone order.
 
 Everything decided is written down. **Do not re-derive it; read it.**
 
@@ -109,10 +110,11 @@ identity, authority, isolation, and verification prerequisites exist.
 
 ## Open work (resume here)
 
-M0 and M1 are complete. Resume at M2.1 with the trusted Subject configuration and reviewer
-compatibility check, then pin Campaign authority before candidate capture. Continue in milestone
-order; do not pull Proposal or scatter work forward past Subject, authority, isolation, and
-verification prerequisites.
+M0, M1, and M2.1's trusted Subject configuration and reviewer compatibility check are complete.
+Runtime `Subject@1` publication is not: resume by pinning Campaign authority before candidate
+capture, then publish and wire the exact Subject and Change Set. Continue in milestone order; do
+not pull Proposal or scatter work forward past Subject, authority, isolation, and verification
+prerequisites.
 
 ## Risks / notes
 
@@ -134,7 +136,7 @@ verification prerequisites.
 - **Agent work on the hub happens in a worktree** (`make worktree NAME=<task>`), not on the
   owner's live checkout. Root `AGENTS.md` has the rule.
 - **Editing a reviewer package requires re-locking**, or the digest check fails at load:
-  `cargo run -p review-config --example lock -- ../../.review/reviewers architecture performance
-  > ../../.review/review.lock`.
+  `make -C template review-kernel-lock` from this repository, or `make review-kernel-lock` from
+  a generated hub.
 - **M7 makes reviewer rounds more expensive.** A model that writes code costs more than one that
   writes prose; every pipeline's `[budgets]` caps need re-deriving when it lands.

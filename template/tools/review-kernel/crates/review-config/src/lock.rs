@@ -22,7 +22,7 @@
 //! Versions are exact (`major.minor.patch`, digits only). `latest`, ranges, and wildcards are
 //! refused at parse time so a floating pin cannot even be *written*, let alone resolved.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,9 @@ use crate::CommandSpec;
 #[derive(Debug)]
 pub enum LockError {
     Parse(String),
+    InvalidName {
+        name: String,
+    },
     /// A version that does not name exactly one release.
     Floating {
         name: String,
@@ -70,6 +73,18 @@ pub enum LockError {
         name: String,
         path: PathBuf,
     },
+    UnsupportedFileType {
+        name: String,
+        path: PathBuf,
+    },
+    UnsupportedPath {
+        name: String,
+        path: PathBuf,
+    },
+    UnsupportedSubject {
+        name: String,
+        subject: review_core::SubjectKind,
+    },
     MissingManifest {
         name: String,
         root: PathBuf,
@@ -84,6 +99,9 @@ impl std::fmt::Display for LockError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LockError::Parse(e) => write!(f, "lockfile: {e}"),
+            LockError::InvalidName { name } => {
+                write!(f, "reviewer name `{name}` is not a safe registry component")
+            }
             LockError::Floating { name, version } => write!(
                 f,
                 "reviewer `{name}` pins version `{version}`, which does not name exactly one \
@@ -138,6 +156,19 @@ impl std::fmt::Display for LockError {
                 "reviewer `{name}` contains a symlink at {}; a package is regular files only",
                 path.display()
             ),
+            LockError::UnsupportedFileType { name, path } => write!(
+                f,
+                "reviewer `{name}` contains a non-regular file at {}; a package is regular files only",
+                path.display()
+            ),
+            LockError::UnsupportedPath { name, path } => write!(
+                f,
+                "reviewer `{name}` contains a path that is not valid UTF-8 at {}; refusing a lossy digest name",
+                path.display()
+            ),
+            LockError::UnsupportedSubject { name, subject } => {
+                write!(f, "reviewer `{name}` does not accept `{subject}` subjects")
+            }
             LockError::MissingManifest { name, root } => write!(
                 f,
                 "reviewer `{name}` at {} has no reviewer.toml",
@@ -156,7 +187,15 @@ impl std::error::Error for LockError {}
 pub struct PackageManifest {
     pub name: String,
     pub version: String,
+    /// Packages predating Subject capabilities reviewed whole trees. Preserving that exact
+    /// capability keeps them readable without letting them silently claim diff support.
+    #[serde(default = "legacy_subjects")]
+    pub subjects: Vec<review_core::SubjectKind>,
     pub runner: CommandSpec,
+}
+
+fn legacy_subjects() -> Vec<review_core::SubjectKind> {
+    vec![review_core::SubjectKind::WholeTree]
 }
 
 /// One pinned reviewer.
@@ -196,10 +235,38 @@ impl Registry {
     /// verifies is the next question, and a failure there must not be papered over by a copy
     /// further down the chain.
     fn locate(&self, name: &str) -> Result<PathBuf, LockError> {
+        if name.is_empty()
+            || !name.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
+            })
+        {
+            return Err(LockError::InvalidName {
+                name: name.to_string(),
+            });
+        }
         for root in &self.roots {
             let candidate = root.join(name);
-            if candidate.is_dir() {
-                return Ok(candidate);
+            match std::fs::symlink_metadata(&candidate) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(LockError::Symlink {
+                        name: name.to_string(),
+                        path: candidate,
+                    });
+                }
+                Ok(metadata) if metadata.is_dir() => return Ok(candidate),
+                Ok(_) => {
+                    return Err(LockError::UnsupportedFileType {
+                        name: name.to_string(),
+                        path: candidate,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(LockError::Io {
+                        path: candidate,
+                        error: error.to_string(),
+                    });
+                }
             }
         }
         Err(LockError::NotFound {
@@ -222,6 +289,22 @@ fn well_formed_digest(digest: &str) -> bool {
     digest
         .strip_prefix("sha256:")
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+fn validate_pin(name: &str, pin: &Pin) -> Result<(), LockError> {
+    if !exact_version(&pin.version) {
+        return Err(LockError::Floating {
+            name: name.to_string(),
+            version: pin.version.clone(),
+        });
+    }
+    if !well_formed_digest(&pin.digest) {
+        return Err(LockError::MalformedDigest {
+            name: name.to_string(),
+            digest: pin.digest.clone(),
+        });
+    }
+    Ok(())
 }
 
 /// Read every regular file in the package into memory, keyed by `/`-separated relative path.
@@ -250,13 +333,26 @@ fn collect(name: &str, root: &Path) -> Result<BTreeMap<String, Vec<u8>>, LockErr
             if kind.is_dir() {
                 pending.push(path);
             } else {
-                let relative = path
+                if !kind.is_file() {
+                    return Err(LockError::UnsupportedFileType {
+                        name: name.to_string(),
+                        path,
+                    });
+                }
+                let relative_path = path
                     .strip_prefix(root)
-                    .expect("walked paths live under the root")
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/");
+                    .expect("walked paths live under the root");
+                let mut components = Vec::new();
+                for component in relative_path.components() {
+                    let component = component.as_os_str().to_str().ok_or_else(|| {
+                        LockError::UnsupportedPath {
+                            name: name.to_string(),
+                            path: path.clone(),
+                        }
+                    })?;
+                    components.push(component);
+                }
+                let relative = components.join("/");
                 let bytes = std::fs::read(&path).map_err(|e| io(&path, e))?;
                 files.insert(relative, bytes);
             }
@@ -304,18 +400,7 @@ impl Lockfile {
             )));
         }
         for (name, pin) in &lockfile.reviewers {
-            if !exact_version(&pin.version) {
-                return Err(LockError::Floating {
-                    name: name.clone(),
-                    version: pin.version.clone(),
-                });
-            }
-            if !well_formed_digest(&pin.digest) {
-                return Err(LockError::MalformedDigest {
-                    name: name.clone(),
-                    digest: pin.digest.clone(),
-                });
-            }
+            validate_pin(name, pin)?;
         }
         Ok(lockfile)
     }
@@ -326,13 +411,18 @@ impl Lockfile {
 
     /// Resolve one locked reviewer: locate, verify the digest, then read the manifest from the
     /// verified bytes.
-    pub fn resolve(&self, name: &str, registry: &Registry) -> Result<ResolvedReviewer, LockError> {
+    fn resolve_package(
+        &self,
+        name: &str,
+        registry: &Registry,
+    ) -> Result<(ResolvedReviewer, Vec<review_core::SubjectKind>), LockError> {
         let pin = self
             .reviewers
             .get(name)
             .ok_or_else(|| LockError::NotLocked {
                 name: name.to_string(),
             })?;
+        validate_pin(name, pin)?;
         let root = registry.locate(name)?;
         let files = collect(name, &root)?;
 
@@ -361,14 +451,32 @@ impl Lockfile {
             });
         }
 
-        Ok(ResolvedReviewer::new(
+        let subjects = manifest.subjects;
+        let reviewer = ResolvedReviewer::new(
             name,
             manifest.version,
             found,
             root,
             manifest.runner.build(),
             files,
-        ))
+        );
+        Ok((reviewer, subjects))
+    }
+
+    pub fn resolve_for_subject(
+        &self,
+        name: &str,
+        registry: &Registry,
+        subject: review_core::SubjectKind,
+    ) -> Result<ResolvedReviewer, LockError> {
+        let (reviewer, subjects) = self.resolve_package(name, registry)?;
+        if !subjects.contains(&subject) {
+            return Err(LockError::UnsupportedSubject {
+                name: name.to_string(),
+                subject,
+            });
+        }
+        Ok(reviewer)
     }
 
     /// Compute the pin for a package as it stands — what lock generation records.
@@ -410,7 +518,19 @@ impl Lockfile {
             })?;
         let text = std::str::from_utf8(bytes)
             .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))?;
-        toml::from_str(text)
-            .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))
+        let manifest: PackageManifest = toml::from_str(text)
+            .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))?;
+        if manifest.subjects.is_empty() {
+            return Err(LockError::Parse(format!(
+                "reviewer.toml for `{name}` accepts no Subject kind"
+            )));
+        }
+        let unique: BTreeSet<_> = manifest.subjects.iter().collect();
+        if unique.len() != manifest.subjects.len() {
+            return Err(LockError::Parse(format!(
+                "reviewer.toml for `{name}` contains duplicate Subject kinds"
+            )));
+        }
+        Ok(manifest)
     }
 }

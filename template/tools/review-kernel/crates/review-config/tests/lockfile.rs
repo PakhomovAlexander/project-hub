@@ -8,6 +8,24 @@ use std::path::Path;
 
 use review_config::lock::{LockError, Lockfile, Pin, Registry, package_digest};
 
+trait ResolveWholeTree {
+    fn resolve(
+        &self,
+        name: &str,
+        registry: &Registry,
+    ) -> Result<review_config::lock::ResolvedReviewer, LockError>;
+}
+
+impl ResolveWholeTree for Lockfile {
+    fn resolve(
+        &self,
+        name: &str,
+        registry: &Registry,
+    ) -> Result<review_config::lock::ResolvedReviewer, LockError> {
+        self.resolve_for_subject(name, registry, review_core::SubjectKind::WholeTree)
+    }
+}
+
 /// A package directory: manifest, prompt, one support file.
 fn write_package(root: &Path, name: &str, version: &str) {
     let dir = root.join(name);
@@ -15,7 +33,7 @@ fn write_package(root: &Path, name: &str, version: &str) {
     std::fs::write(
         dir.join("reviewer.toml"),
         format!(
-            "name = \"{name}\"\nversion = \"{version}\"\n\n\
+            "name = \"{name}\"\nversion = \"{version}\"\nsubjects = [\"diff\", \"whole-tree\"]\n\n\
              [runner]\nprogram = \"codex\"\nargs = [{{ value = \"review\" }}]\n"
         ),
     )
@@ -50,6 +68,43 @@ fn a_locked_reviewer_resolves_and_carries_its_runner() {
         resolved.runner.resolve().unwrap(),
         vec!["review".to_string()]
     );
+}
+
+#[test]
+fn a_legacy_manifest_accepts_only_whole_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let package = dir.path().join("architecture");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("reviewer.toml"),
+        "name = \"architecture\"\nversion = \"1.2.0\"\n\n\
+         [runner]\nprogram = \"codex\"\nargs = []\n",
+    )
+    .unwrap();
+    let registry = Registry::new([dir.path()]);
+    let lockfile = locked("architecture", &registry);
+
+    assert!(lockfile.resolve("architecture", &registry).is_ok());
+    assert!(matches!(
+        lockfile
+            .resolve_for_subject("architecture", &registry, review_core::SubjectKind::Diff,)
+            .unwrap_err(),
+        LockError::UnsupportedSubject { .. }
+    ));
+}
+
+#[test]
+fn a_programmatically_inserted_floating_pin_is_refused_at_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    write_package(dir.path(), "architecture", "1.2.0");
+    let registry = Registry::new([dir.path()]);
+    let mut lockfile = locked("architecture", &registry);
+    lockfile.reviewers.get_mut("architecture").unwrap().version = "latest".to_string();
+
+    assert!(matches!(
+        lockfile.resolve("architecture", &registry).unwrap_err(),
+        LockError::Floating { .. }
+    ));
 }
 
 #[test]
@@ -112,7 +167,7 @@ fn changing_the_runner_command_breaks_the_pin() {
 
     std::fs::write(
         dir.path().join("architecture/reviewer.toml"),
-        "name = \"architecture\"\nversion = \"1.2.0\"\n\n\
+        "name = \"architecture\"\nversion = \"1.2.0\"\nsubjects = [\"diff\", \"whole-tree\"]\n\n\
          [runner]\nprogram = \"curl\"\nargs = [{ value = \"http://evil.invalid\" }]\n",
     )
     .unwrap();
@@ -286,7 +341,7 @@ fn a_package_declaring_another_name_is_refused() {
     let package = dir.path().join("architecture");
     std::fs::write(
         package.join("reviewer.toml"),
-        "name = \"performance\"\nversion = \"1.2.0\"\n\n\
+        "name = \"performance\"\nversion = \"1.2.0\"\nsubjects = [\"diff\", \"whole-tree\"]\n\n\
          [runner]\nprogram = \"codex\"\nargs = [{ value = \"review\" }]\n",
     )
     .unwrap();
@@ -314,4 +369,88 @@ fn a_locked_reviewer_missing_from_every_registry_names_what_it_searched() {
             .to_string()
             .contains(&dir.path().display().to_string())
     );
+}
+
+#[test]
+fn a_manifest_accepting_no_subject_cannot_be_pinned() {
+    let dir = tempfile::tempdir().unwrap();
+    write_package(dir.path(), "architecture", "1.2.0");
+    std::fs::write(
+        dir.path().join("architecture/reviewer.toml"),
+        "name = \"architecture\"\nversion = \"1.2.0\"\nsubjects = []\n\n\
+         [runner]\nprogram = \"codex\"\n",
+    )
+    .unwrap();
+    let registry = Registry::new([dir.path()]);
+
+    let error = Lockfile::pin("architecture", &registry).unwrap_err();
+    assert!(
+        error.to_string().contains("accepts no Subject kind"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_regular_package_entry_is_refused_before_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    write_package(dir.path(), "architecture", "1.2.0");
+    let pipe = dir.path().join("architecture/provider.pipe");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&pipe)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let registry = Registry::new([dir.path()]);
+
+    assert!(matches!(
+        Lockfile::pin("architecture", &registry).unwrap_err(),
+        LockError::UnsupportedFileType { .. }
+    ));
+}
+
+#[test]
+fn a_package_name_cannot_escape_its_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::new([dir.path()]);
+    assert!(matches!(
+        Lockfile::pin("../outside", &registry).unwrap_err(),
+        LockError::InvalidName { .. }
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_cannot_be_a_package_root() {
+    let registry_dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write_package(outside.path(), "architecture", "1.2.0");
+    std::os::unix::fs::symlink(
+        outside.path().join("architecture"),
+        registry_dir.path().join("architecture"),
+    )
+    .unwrap();
+    let registry = Registry::new([registry_dir.path()]);
+
+    assert!(matches!(
+        Lockfile::pin("architecture", &registry).unwrap_err(),
+        LockError::Symlink { .. }
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_non_utf8_package_path_is_refused_not_lossily_hashed() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_package(dir.path(), "architecture", "1.2.0");
+    let name = std::ffi::OsString::from_vec(vec![b'x', 0xff]);
+    std::fs::write(dir.path().join("architecture").join(name), b"content").unwrap();
+    let registry = Registry::new([dir.path()]);
+
+    assert!(matches!(
+        Lockfile::pin("architecture", &registry).unwrap_err(),
+        LockError::UnsupportedPath { .. }
+    ));
 }

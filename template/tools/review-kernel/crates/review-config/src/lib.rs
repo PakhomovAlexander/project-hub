@@ -21,8 +21,8 @@ use std::collections::BTreeMap;
 use review_check::CheckDefinition;
 use review_core::{Arg, Command, Provenance};
 use review_graph::{
-    Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,
-    SnapshotAffinity,
+    Dispatch, Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,
+    RunReport, Scheduler, SnapshotAffinity,
 };
 use review_store::ConvergencePolicy;
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Binding(e) => write!(f, "pipeline definition: {e}"),
             ConfigError::UnknownVersion(v) => write!(
                 f,
-                "pipeline definition: unsupported version {v}; this kernel understands version 1"
+                "pipeline definition: unsupported version {v}; this kernel understands versions 1 and 2"
             ),
             ConfigError::Lock(e) => write!(f, "pipeline definition: {e}"),
         }
@@ -295,11 +295,20 @@ pub enum BudgetUnit {
     Tokens,
 }
 
+/// The immutable Subject shape this pipeline is defined to review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubjectSpec {
+    pub kind: review_core::SubjectKind,
+}
+
 /// A whole pipeline definition, as a project writes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
     pub version: u32,
+    #[serde(default)]
+    pub subject: Option<SubjectSpec>,
     #[serde(default)]
     pub checks: Vec<CheckSpec>,
     pub nodes: Vec<NodeSpec>,
@@ -313,14 +322,73 @@ pub struct Definition {
 
 /// A validated definition: the plan, the checks, and the reviewer bindings.
 pub struct Loaded {
-    pub plan: Planned,
-    pub checks: Vec<CheckDefinition>,
-    pub reviewers: BTreeMap<String, Command>,
+    subject: SubjectSpec,
+    plan: Planned,
+    checks: Vec<CheckDefinition>,
+    reviewers: BTreeMap<String, Command>,
     /// Package-backed reviewers, by node: name, exact version, digest, verified root. What a
     /// run manifest records so replay can prove which reviewer bytes were used.
-    pub packages: BTreeMap<String, lock::ResolvedReviewer>,
-    pub convergence: ConvergencePolicy,
-    pub budgets: Option<BudgetSpec>,
+    packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>>,
+    convergence: ConvergencePolicy,
+    budgets: Option<BudgetSpec>,
+}
+
+/// A dispatcher that declares the Subject semantics it actually executes.
+pub trait SubjectDispatch: Dispatch + Sync {
+    fn subject_kind(&self) -> review_core::SubjectKind;
+}
+
+impl Loaded {
+    pub fn subject_kind(&self) -> review_core::SubjectKind {
+        self.subject.kind
+    }
+
+    pub fn checks(&self) -> &[CheckDefinition] {
+        &self.checks
+    }
+
+    pub fn reviewers(&self) -> &BTreeMap<String, Command> {
+        &self.reviewers
+    }
+
+    pub fn packages(&self) -> &BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> {
+        &self.packages
+    }
+
+    pub fn convergence(&self) -> &ConvergencePolicy {
+        &self.convergence
+    }
+
+    pub fn budgets(&self) -> Option<&BudgetSpec> {
+        self.budgets.as_ref()
+    }
+
+    pub fn plan_order(&self) -> &[String] {
+        &self.plan.order
+    }
+
+    pub fn node_is_gated(&self, node: &str) -> bool {
+        !self.plan.gates_for(node).is_empty()
+    }
+
+    pub fn node_receives_port(&self, node: &str, port: &str) -> bool {
+        self.plan
+            .dependencies_of(node)
+            .iter()
+            .any(|edge| edge.to.name == port)
+    }
+
+    /// Schedule only through a dispatcher whose execution semantics match this definition.
+    pub fn run(&self, dispatcher: &impl SubjectDispatch) -> Result<RunReport, ConfigError> {
+        if dispatcher.subject_kind() != self.subject.kind {
+            return Err(ConfigError::Binding(format!(
+                "pipeline declares `{}` but its dispatcher executes `{}`",
+                self.subject.kind,
+                dispatcher.subject_kind()
+            )));
+        }
+        Ok(Scheduler::new(&self.plan).run(dispatcher))
+    }
 }
 
 impl Definition {
@@ -352,19 +420,34 @@ impl Definition {
         self,
         resolver: Option<(&lock::Lockfile, &lock::Registry)>,
     ) -> Result<Loaded, ConfigError> {
-        if self.version != 1 {
-            return Err(ConfigError::UnknownVersion(self.version));
-        }
+        let subject = match (self.version, self.subject) {
+            (1, None) => SubjectSpec {
+                kind: review_core::SubjectKind::WholeTree,
+            },
+            (1, Some(_)) => {
+                return Err(ConfigError::Binding(
+                    "pipeline format version 1 has no `[subject]`; use version 2 to declare it"
+                        .to_string(),
+                ));
+            }
+            (2, Some(subject)) => subject,
+            (2, None) => {
+                return Err(ConfigError::Binding(
+                    "pipeline format version 2 requires `[subject]`".to_string(),
+                ));
+            }
+            (version, _) => return Err(ConfigError::UnknownVersion(version)),
+        };
         if let Some(budgets) = &self.budgets {
             if budgets.attempt == 0 || budgets.run == 0 {
                 return Err(ConfigError::Binding(
-                    "a zero-token budget cap means nothing can ever dispatch;                      omit [budgets] to run uncapped"
+                    "a zero-token budget cap means nothing can ever dispatch; omit [budgets] to run uncapped"
                         .to_string(),
                 ));
             }
             if budgets.attempt > budgets.run {
                 return Err(ConfigError::Binding(format!(
-                    "the attempt cap ({}) exceeds the run cap ({}); no attempt could ever                      reserve",
+                    "the attempt cap ({}) exceeds the run cap ({}); no attempt could ever reserve",
                     budgets.attempt, budgets.run
                 )));
             }
@@ -373,6 +456,8 @@ impl Definition {
         let mut pipeline = Pipeline::default();
         let mut reviewers = BTreeMap::new();
         let mut packages = BTreeMap::new();
+        let mut resolved_packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> =
+            BTreeMap::new();
         for spec in &self.nodes {
             let mut node = Node::new(&spec.id, spec.kind.into())
                 .accepting_contracts(spec.inputs.iter().map(PortContractSpec::build).collect())
@@ -398,6 +483,13 @@ impl Definition {
                     )));
                 }
                 (NodeKindSpec::Reviewer, Some(command), None) => {
+                    if subject.kind == review_core::SubjectKind::Diff {
+                        return Err(ConfigError::Binding(format!(
+                            "reviewer node `{}` uses an inline runner, which has no package \
+                             manifest declaring `diff` Subject support",
+                            spec.id
+                        )));
+                    }
                     reviewers.insert(spec.id.clone(), command.build());
                 }
                 (NodeKindSpec::Reviewer, None, Some(package)) => {
@@ -408,9 +500,19 @@ impl Definition {
                             spec.id
                         )));
                     };
-                    let resolved = lockfile
-                        .resolve(package, registry)
-                        .map_err(ConfigError::Lock)?;
+                    let resolved = match resolved_packages.get(package) {
+                        Some(resolved) => std::sync::Arc::clone(resolved),
+                        None => {
+                            let resolved = std::sync::Arc::new(
+                                lockfile
+                                    .resolve_for_subject(package, registry, subject.kind)
+                                    .map_err(ConfigError::Lock)?,
+                            );
+                            resolved_packages
+                                .insert(package.clone(), std::sync::Arc::clone(&resolved));
+                            resolved
+                        }
+                    };
                     reviewers.insert(spec.id.clone(), resolved.runner.clone());
                     packages.insert(spec.id.clone(), resolved);
                 }
@@ -437,6 +539,12 @@ impl Definition {
                     .to_string(),
             ));
         }
+        if reviewers.is_empty() {
+            return Err(ConfigError::Binding(
+                "pipeline defines no reviewer; a review with no reviewer cannot produce claims"
+                    .to_string(),
+            ));
+        }
 
         let plan = pipeline.plan().map_err(ConfigError::Plan)?;
         let checks = self
@@ -453,6 +561,7 @@ impl Definition {
             .collect();
 
         Ok(Loaded {
+            subject,
             plan,
             checks,
             reviewers,

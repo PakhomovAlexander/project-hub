@@ -107,6 +107,11 @@ Map `template/<path>` → `<hub>/<path>`. For each path in the delta, in this or
   an unmatched glob aborts the whole command under zsh). `tools` is in that find because
   the Review Kernel ships `tools/review-kernel/fixtures/synthetic/generate.sh`, which
   `make review-kernel-fixtures` executes directly.
+- Re-lock reviewer packages after merging template changes. Package manifests and prompts are
+  digest-pinned, so carrying a new package byte with the old lock correctly makes the updated hub
+  unloadable. Run `make review-kernel-lock` from the hub root. The target uses the pinned Rust
+  toolchain, discovers every reviewer directory, writes to a temporary file, and replaces the
+  lock only after successful generation.
 - Run the hub's `scripts/verify.sh` — the **freshly updated** one, so new checks apply.
   Fix everything it flags.
 - Bump `.hub-meta.yml`: `template.sha` → the sha you updated to; add or refresh an

@@ -2,16 +2,16 @@ version = 1
 
 [reviewers.architecture]
 version = "1.3.0"
-digest = "sha256:acd17c30603599cf1566514b4fddebe94b50e6481f2075adb6e40ecb40e81182"
+digest = "sha256:d2aa311af1bc0303d38f3aef56cab7a923f5fe49cba28750f46d8035dbf84349"
 
 [reviewers.contracts]
 version = "1.2.0"
-digest = "sha256:679b25aaa3c7722ebe76e6ed1be252ff49343b2c9ed31549bc77b176f79ccec9"
+digest = "sha256:2496203764542304a2b1153a1a53b7469e14549ce9158e7de8e54aa1b1a208e6"
 
 [reviewers.cross]
 version = "1.0.0"
-digest = "sha256:ac9b6bdddb67d3ba00cc918953b0b4fbc2d010a257c2299090f2c87fc44dbc0f"
+digest = "sha256:408642c26ef22cf6116340817d5145ec10cabb8db5b36a1a3cffdb5f14e20da8"
 
 [reviewers.performance]
 version = "1.3.0"
-digest = "sha256:c4ddf6b5f449320fec79ba067bddfc348ca11c4e423650ef11fbf82f79ec1136"
+digest = "sha256:906b6f01258307a928956bfbfd7184284b3ee8ef1064004a2c12e476ddfd87d2"

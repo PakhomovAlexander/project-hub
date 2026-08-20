@@ -63,7 +63,9 @@ fn package(dir: &Path, stub_path: &Path) -> review_config::lock::ResolvedReviewe
         "tester".to_string(),
         Lockfile::pin("tester", &registry).unwrap(),
     );
-    lockfile.resolve("tester", &registry).unwrap()
+    lockfile
+        .resolve_for_subject("tester", &registry, review_core::SubjectKind::WholeTree)
+        .unwrap()
 }
 
 fn adapter_for(
@@ -200,7 +202,9 @@ fn a_package_naming_another_runner_is_refused() {
         "tester".to_string(),
         Lockfile::pin("tester", &registry).unwrap(),
     );
-    let resolved = lockfile.resolve("tester", &registry).unwrap();
+    let resolved = lockfile
+        .resolve_for_subject("tester", &registry, review_core::SubjectKind::WholeTree)
+        .unwrap();
 
     let error = review_runner_codex::CodexAdapter::from_package(&resolved, Duration::from_secs(1))
         .map(|_| ())
@@ -291,8 +295,5 @@ fn prior_findings_reach_the_prompt_as_labelled_data() {
         "{sent}"
     );
     assert!(sent.contains("ab12cd34ef56"), "{sent}");
-    assert!(
-        sent.contains("dispute it, with claim_id set to the finding's key"),
-        "{sent}"
-    );
+    assert!(sent.contains("position set to `refute`"), "{sent}");
 }

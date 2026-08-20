@@ -71,6 +71,8 @@ session-stats:
 # Review Kernel (tools/review-kernel) — backs /self-review-heavy; see
 # docs/self-review-heavy.md. Pinned toolchain and committed lockfile.
 RK_MANIFEST := tools/review-kernel/Cargo.toml
+RK_REVIEW ?= .review
+RK_REVIEWERS := $(sort $(notdir $(patsubst %/,%,$(dir $(wildcard $(RK_REVIEW)/reviewers/*/reviewer.toml)))))
 
 review-kernel: review-kernel-fmt review-kernel-lint review-kernel-test
 
@@ -83,6 +85,19 @@ review-kernel-lint:
 
 review-kernel-test:
 	cargo +1.88.0 test --manifest-path $(RK_MANIFEST) --locked
+
+review-kernel-lock:
+	@[ -n "$(RK_REVIEWERS)" ] || { \
+		echo "no reviewer packages under $(RK_REVIEW)/reviewers; refusing to replace the lock" >&2; \
+		exit 1; \
+	}
+	@tmp=$$(mktemp) && \
+		trap 'rm -f "$$tmp"' EXIT && \
+		cargo +1.88.0 run --locked --manifest-path $(RK_MANIFEST) \
+			-p review-config --example lock -- \
+			$(RK_REVIEW)/reviewers $(RK_REVIEWERS) > "$$tmp" && \
+		mv "$$tmp" $(RK_REVIEW)/review.lock && \
+		trap - EXIT
 
 # The acceptance tests against a private legacy corpus. #[ignore]d by default because the
 # corpus does not ship; here a missing corpus fails rather than reporting ok.

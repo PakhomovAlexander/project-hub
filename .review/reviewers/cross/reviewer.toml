@@ -1,5 +1,6 @@
 name = "cross"
 version = "1.0.0"
+subjects = ["whole-tree"]
 
 [runner]
 program = "claude"

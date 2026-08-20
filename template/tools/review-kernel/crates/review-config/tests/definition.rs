@@ -4,10 +4,14 @@
 //! 90% of a review, so there is no partial load and no defaulting-around-a-typo.
 
 use review_config::{ConfigError, Definition};
+use review_core::SubjectKind;
 use review_graph::PlanError;
 
 const MINIMAL: &str = r#"
-version = 1
+version = 2
+
+[subject]
+kind = "whole-tree"
 
 [[checks]]
 name = "build"
@@ -46,13 +50,17 @@ to = { node = "ledger", port = "reports" }
 fn a_definition_loads_into_a_plan_with_bindings() {
     let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
 
-    assert_eq!(loaded.plan.order, vec!["gate", "architecture", "ledger"]);
-    assert_eq!(loaded.checks.len(), 1);
-    assert!(loaded.checks[0].required, "checks are required by default");
-    assert_eq!(loaded.reviewers.len(), 1);
-    assert!(loaded.reviewers.contains_key("architecture"));
-    assert_eq!(loaded.convergence.max_rounds, 3);
-    assert_eq!(loaded.convergence.gate, review_core::Severity::Major);
+    assert_eq!(loaded.plan_order(), ["gate", "architecture", "ledger"]);
+    assert_eq!(loaded.checks().len(), 1);
+    assert!(
+        loaded.checks()[0].required,
+        "checks are required by default"
+    );
+    assert_eq!(loaded.reviewers().len(), 1);
+    assert!(loaded.reviewers().contains_key("architecture"));
+    assert_eq!(loaded.convergence().max_rounds, 3);
+    assert_eq!(loaded.convergence().gate, review_core::Severity::Major);
+    assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
 }
 
 /// Provenance defaults to `literal`, because the project writing its own command is trusted.
@@ -60,7 +68,7 @@ fn a_definition_loads_into_a_plan_with_bindings() {
 #[test]
 fn an_untrusted_argument_must_say_so() {
     let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
-    let command = &loaded.reviewers["architecture"];
+    let command = &loaded.reviewers()["architecture"];
     assert!(
         command
             .args
@@ -79,7 +87,7 @@ fn an_untrusted_argument_must_say_so() {
         .unwrap();
     // Loading succeeds — the refusal happens at execution, where the value is known to be an
     // option position. The definition is allowed to *describe* an untrusted slot.
-    assert!(loaded.reviewers["architecture"].resolve().is_err());
+    assert!(loaded.reviewers()["architecture"].resolve().is_err());
 }
 
 #[test]
@@ -147,10 +155,10 @@ fn graph_validation_applies_to_definitions_too() {
 
 #[test]
 fn a_future_version_is_refused_rather_than_guessed_at() {
-    let future = MINIMAL.replace("version = 1", "version = 2");
+    let future = MINIMAL.replace("version = 2", "version = 3");
     assert!(matches!(
         Definition::from_toml(&future).unwrap().load(),
-        Err(ConfigError::UnknownVersion(2))
+        Err(ConfigError::UnknownVersion(3))
     ));
 }
 
@@ -159,6 +167,64 @@ fn a_definition_round_trips() {
     let parsed = Definition::from_toml(MINIMAL).unwrap();
     let reserialized = toml::to_string(&parsed).unwrap();
     assert_eq!(Definition::from_toml(&reserialized).unwrap(), parsed);
+}
+
+#[test]
+fn a_version_one_pipeline_remains_a_whole_tree_pipeline() {
+    let legacy = MINIMAL
+        .replace("version = 2", "version = 1")
+        .replace("\n[subject]\nkind = \"whole-tree\"\n", "\n");
+    let loaded = Definition::from_toml(&legacy).unwrap().load().unwrap();
+    assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
+}
+
+#[test]
+fn subject_format_transitions_are_explicit() {
+    let missing = MINIMAL.replace("\n[subject]\nkind = \"whole-tree\"\n", "\n");
+    let error = Definition::from_toml(&missing)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("version 2 requires `[subject]`"));
+
+    let legacy_with_subject = MINIMAL.replace("version = 2", "version = 1");
+    let error = Definition::from_toml(&legacy_with_subject)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("version 1 has no `[subject]`"));
+}
+
+#[test]
+fn an_inline_reviewer_cannot_claim_diff_support() {
+    let diff = MINIMAL.replace("kind = \"whole-tree\"", "kind = \"diff\"");
+    let error = Definition::from_toml(&diff)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("inline runner"), "{error}");
+}
+
+#[test]
+fn a_pipeline_with_no_reviewer_is_refused() {
+    let text = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = ["decision"]
+"#;
+    let error = Definition::from_toml(text)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.to_string().contains("no reviewer"), "{error}");
 }
 
 /// This repository's own pipeline must load — through its own lockfile and registry, which
@@ -186,12 +252,15 @@ fn the_checked_in_pipeline_loads() {
 
     // A gate with nothing to run admits everything, and a review with no reviewer reports
     // nothing while looking like it ran.
-    assert!(!loaded.checks.is_empty(), "the gate has no checks");
-    assert!(!loaded.reviewers.is_empty(), "the pipeline has no reviewer");
+    assert!(!loaded.checks().is_empty(), "the gate has no checks");
+    assert!(
+        !loaded.reviewers().is_empty(),
+        "the pipeline has no reviewer"
+    );
 
-    for (node, command) in &loaded.reviewers {
+    for (node, command) in loaded.reviewers() {
         let package = loaded
-            .packages
+            .packages()
             .get(node)
             .unwrap_or_else(|| panic!("reviewer `{node}` did not come from a package"));
         assert!(
@@ -203,31 +272,46 @@ fn the_checked_in_pipeline_loads() {
             "reviewer `{node}` has no runner program"
         );
         assert!(
-            !loaded.plan.gates_for(node).is_empty(),
+            loaded.node_is_gated(node),
             "reviewer `{node}` is ungated — it would run against a tree that failed its checks"
         );
         // Prior findings must arrive through a wired port. A reviewer wired to nothing would
         // review an empty input with full confidence.
         assert!(
-            loaded
-                .plan
-                .dependencies_of(node)
-                .iter()
-                .any(|e| e.to.name == "prior_findings"),
+            loaded.node_receives_port(node, "prior_findings"),
             "reviewer `{node}` receives no prior findings"
         );
     }
 
     // Every node the plan orders is a node the definition declares, and the order is a
     // function of the pipeline alone.
-    assert!(!loaded.plan.order.is_empty());
+    assert!(!loaded.plan_order().is_empty());
+}
+
+#[test]
+fn the_template_repository_self_review_pipeline_loads_when_present() {
+    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../..");
+    if !repo.join("template/.review").is_dir() {
+        return;
+    }
+    let review_dir = repo.join(".review");
+    let text = std::fs::read_to_string(review_dir.join("pipelines/heavy.toml")).unwrap();
+    let lock_text = std::fs::read_to_string(review_dir.join("review.lock")).unwrap();
+    let lockfile = review_config::lock::Lockfile::from_toml(&lock_text).unwrap();
+    let registry = review_config::lock::Registry::new([review_dir.join("reviewers")]);
+    let loaded = Definition::from_toml(&text)
+        .unwrap()
+        .load_with(&lockfile, &registry)
+        .map_err(|error| error.to_string())
+        .unwrap();
+    assert_eq!(loaded.packages().len(), 4);
 }
 
 /// Budgets validate at load: caps that could never admit a dispatch are refused as config
 /// errors, not discovered as a run that mysteriously does nothing.
 #[test]
 fn an_impossible_budget_is_refused_at_load() {
-    let capped = |budgets: &str| MINIMAL.replace("version = 1", &format!("version = 1\n{budgets}"));
+    let capped = |budgets: &str| MINIMAL.replace("version = 2", &format!("version = 2\n{budgets}"));
 
     let inverted = capped("[budgets]\nunit = \"tokens\"\nattempt = 500\nrun = 100");
     let error = Definition::from_toml(&inverted)
@@ -250,8 +334,8 @@ fn an_impossible_budget_is_refused_at_load() {
 #[test]
 fn an_unknown_budget_unit_is_refused() {
     let text = MINIMAL.replace(
-        "version = 1",
-        "version = 1\n[budgets]\nunit = \"dollars\"\nattempt = 1\nrun = 2",
+        "version = 2",
+        "version = 2\n[budgets]\nunit = \"dollars\"\nattempt = 1\nrun = 2",
     );
     assert!(Definition::from_toml(&text).is_err());
 }
@@ -291,6 +375,45 @@ fn package_binding_rules_are_enforced() {
     assert!(error.to_string().contains("load_with"), "{error}");
 }
 
+#[test]
+fn a_package_that_rejects_the_pipeline_subject_is_refused() {
+    use review_config::lock::{Lockfile, Registry};
+
+    let dir = tempfile::tempdir().unwrap();
+    let package = dir.path().join("architecture");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("reviewer.toml"),
+        "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"whole-tree\"]\n\n\
+         [runner]\nprogram = \"codex\"\n",
+    )
+    .unwrap();
+    std::fs::write(package.join("reviewer.md"), "Review.\n").unwrap();
+    let registry = Registry::new([dir.path()]);
+    let mut lockfile = Lockfile::empty();
+    lockfile.reviewers.insert(
+        "architecture".to_string(),
+        Lockfile::pin("architecture", &registry).unwrap(),
+    );
+
+    let text = MINIMAL
+        .replace("kind = \"whole-tree\"", "kind = \"diff\"")
+        .replace(
+            "runner = { program = \"/bin/sh\", args = [{ value = \"-c\" }, { value = \"echo hi\" }] }",
+            "package = \"architecture\"",
+        );
+    let error = Definition::from_toml(&text)
+        .unwrap()
+        .load_with(&lockfile, &registry)
+        .map(|_| ())
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("does not accept `diff`"),
+        "{error}"
+    );
+}
+
 /// A tampered package fails the *pipeline* load, not just the lockfile call — the whole
 /// definition is refused before anything could run with the wrong reviewer bytes.
 #[test]
@@ -302,7 +425,7 @@ fn a_tampered_package_refuses_the_whole_pipeline() {
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(
         package.join("reviewer.toml"),
-        "name = \"architecture\"\nversion = \"1.0.0\"\n\n[runner]\nprogram = \"codex\"\n",
+        "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"diff\", \"whole-tree\"]\n\n[runner]\nprogram = \"codex\"\n",
     )
     .unwrap();
     std::fs::write(package.join("reviewer.md"), "Review.\n").unwrap();
@@ -367,20 +490,18 @@ to = { node = "architecture", port = "gate" }"#,
 
     let loaded = Definition::from_toml(&text).unwrap().load().unwrap();
     assert!(
-        loaded.plan.order.contains(&"generation".to_string()),
+        loaded.plan_order().contains(&"generation".to_string()),
         "generation node is planned: {:?}",
-        loaded.plan.order
+        loaded.plan_order()
     );
     assert!(
         loaded
-            .plan
-            .order
+            .plan_order()
             .iter()
             .position(|n| n == "generation")
             .unwrap()
             < loaded
-                .plan
-                .order
+                .plan_order()
                 .iter()
                 .position(|n| n == "architecture")
                 .unwrap(),

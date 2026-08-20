@@ -1,5 +1,6 @@
 name = "contracts"
 version = "1.2.0"
+subjects = ["whole-tree"]
 
 [runner]
 program = "codex"
