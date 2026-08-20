@@ -46,7 +46,7 @@ fresh campaign to escape an inconvenient ledger.
 ## 2 · Run a round
 
 ```
-reviewctl run --campaign <name> --authority <trusted-rev> [--focus "<campaign focus>"]
+reviewctl run --campaign <name> --authority <trusted-rev> [--restart-round] [--focus "<campaign focus>"]
 ```
 
 `--authority` is required only when the Campaign opens. Continuations reuse the stored Campaign
@@ -91,6 +91,10 @@ pointless: the next round's reviewers re-find the defect and the ledger reopens 
 ## 4 · Iterate to convergence
 
 Commit the round's fixes, then run the same campaign again. Repeat until:
+
+After an incomplete run, a plain rerun resumes the same pinned Subject and only retries
+missing work. If fixes were committed after that incomplete run, pass \u0060--restart-round\u0060 to
+supersede its epoch, capture the new \u0060HEAD\u0060, and rerun every node.
 
 - **`verdict Pass`** — the only statement that may be reported as converged. Never claim
   convergence from your own reading of the ledger, and never weaken the pipeline, its
