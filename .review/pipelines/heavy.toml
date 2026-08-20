@@ -11,7 +11,7 @@
 # Re-lock after editing either:
 #   cd template/tools/review-kernel && cargo run -p review-config --example lock -- \
 #     ../../../.review/reviewers architecture contracts cross performance > ../../../.review/review.lock
-version = 1
+version = 2
 
 [subject]
 kind = "whole-tree"

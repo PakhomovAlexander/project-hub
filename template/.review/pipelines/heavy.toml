@@ -4,7 +4,7 @@
 # kernel. Reviewers are packages from .review/reviewers/, pinned by content digest in
 # .review/review.lock — re-lock with
 # `cargo run -p review-config --example lock -- .review/reviewers architecture performance`.
-version = 1
+version = 2
 
 [subject]
 kind = "whole-tree"
