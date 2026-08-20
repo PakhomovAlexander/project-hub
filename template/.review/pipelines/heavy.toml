@@ -3,7 +3,8 @@
 # This is the hub's own pipeline: the shape /self-review-heavy runs today, expressed for the
 # kernel. Reviewers are packages from .review/reviewers/, pinned by content digest in
 # .review/review.lock — re-lock with
-# `cargo run -p review-config --example lock -- .review/reviewers architecture performance`.
+# `cargo run --manifest-path tools/review-kernel/Cargo.toml -p review-config --example lock -- \
+#   .review/reviewers architecture performance > .review/review.lock`.
 version = 2
 
 [subject]
