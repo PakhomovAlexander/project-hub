@@ -218,7 +218,7 @@ running from its root.
 | `[subject]` | `kind = "whole-tree"` reviews the complete captured head. `kind = "diff"` is reserved for pipelines whose pinned Base and Change Set are available; kernels that cannot supply them refuse the run rather than silently reviewing a whole tree. Declaring this section requires pipeline format `version = 2`; version 1 remains readable as legacy `whole-tree`. |
 | `[[checks]]` | Gate programs. The program and every option are trusted literals from this file; a value derived from the change under review must be marked `untrusted` — it then can never occupy an option position (a leading `-` is refused, and the check records `not_run`, never "passed"). |
 | `[[nodes]]` / `[[edges]]` | The pipeline DAG. Adding a reviewer = one `[[nodes]]` entry (kind `reviewer`, `package = "<name>"`, `gated_by = "gate"`) plus edges wiring `gate.decision`, `generation.findings`, and its `result` into `gather`. Unknown fields, unwired inputs, and dangling edges are load-time fatal errors — a pipeline that is 90% valid is not 90% of a review. |
-| `[budgets]` | `unit = "tokens"` with `attempt` and `run` caps. Budgets reserve **before** dispatch — a dispatch that cannot reserve does not happen; exhaustion finishes in-flight attempts and reports Incomplete. |
+| `[budgets]` | `unit = "tokens"` with `attempt` and `run` caps. Budgets reserve **before** dispatch — a dispatch that cannot reserve does not happen; exhaustion finishes in-flight attempts and closes the round as `Fail(Exhausted)` (exit 3). |
 | `[convergence]` | `clean_rounds` (quiet rounds required), `max_rounds` (then Exhausted — raising it is the owner's call), `gate` (`minor` / `major` / `blocker` — the minimum severity that blocks). |
 
 ### Reviewer packages — `reviewers/<name>/`
