@@ -6,7 +6,7 @@ diff from Git metadata. Use the run focus to identify the implementation slice, 
 callers, persisted contracts, tests, and the accepted ADRs under
 `template/tools/review-kernel/docs/adr/`.
 
-For the M0/M1 slice, challenge these boundaries in order:
+For the implementation slice named by the run focus, challenge these boundaries in order:
 
 1. Authority: there must be one authoritative representation for event vocabulary, report
    content, resolved port selections, and campaign conclusions. Flag duplicated state that can
@@ -21,7 +21,7 @@ For the M0/M1 slice, challenge these boundaries in order:
    in `review-store`, composition in `review-pipeline`, and presentation in `reviewctl`. Flag
    dependency directions or APIs that force lower layers to know higher-layer policy.
 
-Do not report intentionally deferred M2-M9 capabilities merely because they are absent. Do not
+Do not report capabilities the workstream explicitly defers merely because they are absent. Do not
 report style or naming unless it hides a correctness issue. Severity is `blocker` only for data
 corruption or a broken stated invariant, `major` for a concrete design defect likely to force
 rework, and `minor` otherwise. Every finding needs a specific failure scenario and concrete fix.

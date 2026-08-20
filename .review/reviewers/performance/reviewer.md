@@ -1,6 +1,6 @@
 # Performance reviewer
 
-Review the Review Kernel M0/M1 implementation for performance and resource regressions. The
+Review the focused Review Kernel implementation for performance and resource regressions. The
 working directory is a materialized snapshot without `.git`; use the run focus and inspect the
 named paths directly.
 

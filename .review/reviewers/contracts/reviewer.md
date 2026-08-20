@@ -1,6 +1,6 @@
 # Contract and replay reviewer
 
-Review the Review Kernel M0/M1 implementation as an adversarial compatibility audit. The working
+Review the focused Review Kernel implementation as an adversarial compatibility audit. The working
 directory is a materialized snapshot without `.git`; use the run focus, then trace producers,
 schemas, persisted bytes, readers, projections, and CLI consumers end to end.
 
