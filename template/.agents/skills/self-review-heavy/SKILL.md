@@ -99,9 +99,10 @@ Commit the round's fixes, then run the same campaign again. Repeat until:
 
 ## 5 · Report
 
-Close with: rounds run, findings by severity and final status, resolutions with their
-notes, spend per round, the final verdict, and where the campaign state lives. The
-ledger is the record; your report is a summary of it, not a substitute.
+Use `reviewctl ledger --campaign <name> --long` for finding bodies and fixes, and
+`reviewctl show --campaign <name> <key>` for one finding's complete reports and history.
+Generate the closing record with `reviewctl report --campaign <name> --format md`, then
+summarize it. The ledger is the record; your summary is not a substitute.
 
 ## Legacy
 
