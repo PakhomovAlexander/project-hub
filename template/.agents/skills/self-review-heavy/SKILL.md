@@ -92,15 +92,15 @@ pointless: the next round's reviewers re-find the defect and the ledger reopens 
 
 Commit the round's fixes, then run the same campaign again. Repeat until:
 
-After an incomplete run, a plain rerun resumes the same pinned Subject and only retries
-missing work. If fixes were committed after that incomplete run, pass \u0060--restart-round\u0060 to
-supersede its epoch, capture the new \u0060HEAD\u0060, and rerun every node.
-
 - **`verdict Pass`** — the only statement that may be reported as converged. Never claim
   convergence from your own reading of the ledger, and never weaken the pipeline, its
   budgets, or the convergence policy mid-campaign to reach green.
 - **`Exhausted`** — the round cap hit with work outstanding. Stop and report honestly;
   the owner decides whether to raise `max_rounds` or ship with the ledger open.
+
+After an incomplete run, a plain rerun resumes the same pinned Subject and only retries
+missing work. If fixes were committed after that incomplete run, pass `--restart-round` to
+supersede its epoch, capture the new `HEAD`, and rerun every node.
 
 ## 5 · Report
 
