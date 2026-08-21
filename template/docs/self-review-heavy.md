@@ -243,9 +243,94 @@ lockfile on every test run, so forgetting to re-lock fails CI, not a live review
 
 ### `reviewctl` flags
 
+`reviewctl tui` opens the interactive configuration-proposal and run surface with `PIPELINE GRAPH`,
+`PIPELINE POLICY`, `REVIEWERS`, and `PROVIDERS` tabs. `Tab` and `Shift-Tab` cycle those peer views; Vim movement
+never changes tabs. The graph tab renders the validated DAG as a strict-ASCII, left-to-right
+diagram. Its viewport follows the selected
+node and reports clipped directions without overwriting diagram cells. Data dependencies use solid
+ASCII routes and `gated_by` scheduler dependencies use dotted routes; exact, complete port mappings
+remain visible below the graph. Layout is cached until the pipeline changes, and explicit node,
+link, canvas, and routing-work limits reject pathological diagrams before allocation. The policy
+subpane edits budgets and convergence, while graph selection edits reviewer
+package bindings and reviewer membership. Adding a reviewer clones the
+wiring of the first package-backed reviewer and names that template in the status line; pipelines
+whose reviewers use different wiring must be edited in TOML. Infrastructure nodes and arbitrary
+port contracts remain TOML-owned rather than being guessed by the interface. The reviewer tab discovers the
+packaged reviewers already selected by `--pipeline` and can draft model/effort changes without
+mutating the repository. Press `s` to export one explicit pipeline/reviewer patch under run state
+in the `config-proposals/` directory. Apply and review that patch, commit it, then start a new Campaign
+whose `--authority` names that commit by relaunching the TUI. The in-memory draft remains marked
+pending after export because an exported file is not execution authority. A resumed Campaign keeps
+its original reviewer authority and ignores a newly supplied `--authority`.
+
+Alternatively, keep the TUI open while applying and committing the patch, press `R` to reload the
+now-authoritative worktree configuration, then select a new Campaign name and the committed
+authority before pressing `r`. Reload refuses package or lock bytes that are still inconsistent.
+
+The runner backend is package-owned and read-only; infrastructure nodes and arbitrary port
+contracts stay TOML-owned. Reviewer membership and package bindings are editable by cloning the
+validated wiring of an existing package-backed reviewer. Press `r`
+only when no configuration proposal is pending; it launches the ordinary `reviewctl run` path and
+therefore uses the Campaign's pinned authority, never in-memory or working-tree reviewer settings.
+The alternate screen is suspended while checks and reviewers execute and restored for Pass,
+Fail, and Incomplete verdicts.
+
+The TUI uses Vim-style navigation: `h`/`j`/`k`/`l` moves through the graph, while `j`/`k`,
+`g`/`G`, and `Ctrl-U`/`Ctrl-D` move through lists and policy. Reviewer configuration keeps `h`/`l`
+for a full-width `REVIEWERS` → `WORKTREE CONFIG PROPOSAL` → `PINNED-AUTHORITY RUN` pane sequence;
+`l` moves forward and `h` moves back. `Tab`/`Shift-Tab` alone cycles top-level tabs, and `Enter` edits the selected
+value. Its colors follow those key groups: yellow connects `Tab`/`Shift-Tab` with the top-level tabs, cyan
+connects Vim movement keys with focused panes and selected rows/nodes, and green connects mutating
+keys with edit prompts and dirty proposals. Color reinforces the labels; it is never the only
+indicator.
+
+The `PROVIDERS` tab is a read-only machine-local inventory. It discovers one ambient candidate for
+each supported CLI on `PATH` and runs only `claude auth status --json` or `codex login status` with
+bounded output and a five-second timeout. Explicit status probes receive the same kind-specific
+auth-directory selector the adapters understand; an unset ambient selector remains unset. The
+vendor CLI reads its own auth context, while `reviewctl` never reads or prints credential values.
+Providers do not enter configuration proposals, reviewer packages, lockfiles, or Campaign authority.
+This iteration does not bind reviewers to providers.
+
+Ambient candidates are explicitly labelled unstable: their login can change without changing the
+candidate ID. Only a registry entry supplies the operator-named context required by the Provider
+definition. Probe output is normalized through fixed auth-type allowlists; raw stdout and stderr
+are never rendered. Probes run in bounded groups of four and isolated process groups. Stdout is
+read through a nonblocking pipe under a 64 KiB cap and stderr is discarded, so continuous output
+cannot starve the deadline. `R` refreshes in the background without changing tabs or proposal state.
+
+Additional accounts use `${XDG_CONFIG_HOME:-~/.config}/reviewctl/providers.toml` (or the file named
+by `REVIEWCTL_PROVIDERS_FILE`). IDs are globally unique while kinds may repeat:
+
+```toml
+version = 1
+
+[[providers]]
+id = "claude-work"
+kind = "claude"
+auth_dir = "/Users/me/.claude-work"
+
+[[providers]]
+id = "claude-personal"
+kind = "claude"
+auth_dir = "/Users/me/.claude-personal"
+```
+
+Registry auth directories must be absolute and distinct for a given kind. The registry cannot
+name commands, arguments, arbitrary environment variables, or secrets; `reviewctl` resolves the
+fixed `claude` and `codex` commands from `PATH`. A malformed registry is shown as a warning while
+implicit providers remain inspectable.
+In `PIPELINE GRAPH`, `a` adds a package-backed reviewer and `d` twice removes one. `s` exports a
+configuration patch; `R` reloads applied configuration; `r` runs pinned authority; `Esc` cancels
+an edit; and `q` quits. Proposal export refuses
+package or lock bytes changed by another process while the interface was open. Proposal state may
+be outside the repository or below `.review/runs/`; paths that could alias captured reviewer,
+pipeline, or lock content are refused.
+
 | Flag | Meaning |
 |---|---|
 | `--campaign NAME` | Join a persistent ledger; the same name continues the pinned Campaign. Without it, `local` is the Campaign name. |
+| `--state DIR` | Store run state at `DIR`; relative paths resolve from the process working directory. Repository-contained state is allowed only below the selected review tree's `runs/` directory. |
 | `--authority REV` | Required when opening a Campaign. Resolves the trusted Snapshot that supplies pipeline, lock, reviewer packages, and policy; never re-resolved on continuation. For `diff`, this Snapshot is also the Campaign's immutable Base, so use the integration branch or merge base such as `origin/main`, not `HEAD`. |
 | `--uncommitted` | Capture tracked and untracked-not-ignored worktree content behind a monitored two-pass boundary, then build an isolated synthetic Git head without writing candidate objects. Changed gitlinks and unsafe parent symlinks fail closed. |
 | `--restart-round` | Explicitly supersede an incomplete Round's immutable Subject and input sets with a newly captured head under the next epoch. |

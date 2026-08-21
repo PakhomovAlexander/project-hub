@@ -1,6 +1,6 @@
 //! `reviewctl` — reviews from a definition file to a verdict, and the campaign loop.
 //!
-//! Three subcommands:
+//! Six subcommands:
 //!
 //! - `run` captures the repository HEAD as an immutable snapshot, loads the pipeline through
 //!   its lockfile, binds each packaged reviewer to the adapter its runner names, executes
@@ -11,6 +11,8 @@
 //! - `ledger` prints a campaign's findings, one per line, machine-readably.
 //! - `resolve` records the operator's disposition of one finding (fixed, wontfix, ...) in the
 //!   campaign's ledger — the step between fixing and the round that verifies the fix.
+//! - `tui` drafts an explicit configuration patch for the pipeline's existing reviewer packages
+//!   and launches the same pinned-authority `run` path from an alternate-screen interface.
 //!
 //! Nothing here mutates any repository. A run reads a repo and writes its own state
 //! directory; `resolve` writes only that state; publishing results anywhere is a human's
@@ -28,7 +30,10 @@ use review_source_git::Repo;
 use review_store::{Cas, EventStore, Ingest, Ledger, Status};
 
 mod authority;
+mod providers;
+mod tui;
 
+#[derive(Clone)]
 struct Options {
     repo: PathBuf,
     pipeline: PathBuf,
@@ -42,15 +47,136 @@ struct Options {
 }
 
 impl Options {
-    /// Where this run's state lives: explicit `--state` wins; a campaign gets its own
-    /// directory; anything else shares `local`.
-    fn state_dir(&self) -> PathBuf {
-        match (&self.state, &self.campaign) {
+    /// Resolve state once for both execution and presentation. Relative paths use the process
+    /// working directory, preserving the CLI's historical meaning, and repository-contained
+    /// state is confined to the review tree's `runs` directory.
+    fn resolved_state_dir(&self) -> Result<PathBuf, String> {
+        if let Some(campaign) = &self.campaign {
+            validate_campaign_name(campaign)?;
+        }
+        let requested = match (&self.state, &self.campaign) {
             (Some(state), _) => state.clone(),
             (None, Some(campaign)) => PathBuf::from(format!(".review/runs/{campaign}")),
             (None, None) => PathBuf::from(".review/runs/local"),
+        };
+        let state = resolve_filesystem_path(&requested)?;
+        let repository = std::fs::canonicalize(&self.repo)
+            .map_err(|error| format!("opening repository {}: {error}", self.repo.display()))?;
+        if state.starts_with(&repository) {
+            let pipeline = if self.pipeline.is_absolute() {
+                self.pipeline.clone()
+            } else {
+                repository.join(&self.pipeline)
+            };
+            let pipeline = pipeline
+                .strip_prefix(&repository)
+                .map_err(|_| "the pipeline path must be inside --repo".to_string())?
+                .to_str()
+                .ok_or_else(|| "the pipeline path must be UTF-8".to_string())?;
+            let review_root = repository.join(authority::review_dir(pipeline)?);
+            refuse_repository_symlinks(&repository, &review_root.join("runs"))?;
+            let allowed = resolve_filesystem_path(&review_root.join("runs"))?;
+            if !state.starts_with(&allowed) {
+                return Err(format!(
+                    "state {} overlaps captured repository content; use state outside --repo or below {}",
+                    state.display(),
+                    review_root.join("runs").display()
+                ));
+            }
+        }
+        Ok(state)
+    }
+}
+
+fn validate_campaign_name(campaign: &str) -> Result<(), String> {
+    let mut components = Path::new(campaign).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(format!(
+            "campaign name `{campaign}` must be one safe path component"
+        ));
+    }
+    Ok(())
+}
+
+fn refuse_repository_symlinks(repository: &Path, path: &Path) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(repository)
+        .map_err(|_| format!("path {} is outside --repo", path.display()))?;
+    let mut current = repository.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "repository-contained state path {} is a symlink",
+                    current.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(format!("opening {}: {error}", current.display())),
         }
     }
+    Ok(())
+}
+
+fn resolve_filesystem_path(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("reading current directory: {error}"))?
+            .join(path)
+    };
+    let absolute = normalize_absolute(&absolute)?;
+    let mut existing = absolute.clone();
+    let mut suffix = Vec::new();
+    while !existing.exists() {
+        let name = existing
+            .file_name()
+            .ok_or_else(|| format!("path {} has no existing ancestor", absolute.display()))?
+            .to_os_string();
+        suffix.push(name);
+        existing
+            .pop()
+            .then_some(())
+            .ok_or_else(|| format!("path {} has no existing ancestor", absolute.display()))?;
+    }
+    let mut resolved = std::fs::canonicalize(&existing)
+        .map_err(|error| format!("opening {}: {error}", existing.display()))?;
+    for component in suffix.into_iter().rev() {
+        resolved.push(component);
+    }
+    normalize_absolute(&resolved)
+}
+
+fn normalize_absolute(path: &Path) -> Result<PathBuf, String> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_)
+            | std::path::Component::RootDir
+            | std::path::Component::Normal(_) => normalized.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(format!(
+                        "path {} escapes its filesystem root",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+    if !normalized.is_absolute() {
+        return Err(format!(
+            "path {} did not resolve absolutely",
+            path.display()
+        ));
+    }
+    Ok(normalized)
 }
 
 struct LedgerOptions {
@@ -83,6 +209,8 @@ fn usage() -> ! {
     eprintln!(
         "usage: reviewctl run     [--repo DIR] [--pipeline FILE] [--state DIR] \
          [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
+        \x20      reviewctl tui     [--repo DIR] [--pipeline FILE] [--state DIR] \
+         [--campaign NAME] [--authority REV] [--uncommitted] [--restart-round] [--focus TEXT] [--timeout-secs N]\n\
         \x20      reviewctl ledger  --campaign NAME [--state DIR] [--long]\n\
         \x20      reviewctl show    --campaign NAME [--state DIR] KEY\n\
         \x20      reviewctl report  --campaign NAME [--state DIR] [--format md]\n\
@@ -97,10 +225,13 @@ fn campaign_run_id(campaign: &str) -> String {
     format!("campaign-{campaign}")
 }
 
-fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> PathBuf {
-    state
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(format!(".review/runs/{campaign}")))
+fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> Result<PathBuf, String> {
+    validate_campaign_name(campaign)?;
+    resolve_filesystem_path(
+        &state
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(format!(".review/runs/{campaign}"))),
+    )
 }
 
 fn parse_run(mut args: std::env::Args) -> Options {
@@ -231,11 +362,12 @@ fn main() {
     let mut args = std::env::args();
     args.next();
     let result = match args.next().as_deref() {
-        Some("run") => run(&parse_run(args)),
+        Some("run") => run(&parse_run(args)).map(exit_for_verdict),
         Some("ledger") => print_ledger(&parse_ledger(args)),
         Some("show") => show(&parse_show(args)),
         Some("report") => print_report(&parse_report(args)),
         Some("resolve") => resolve(&parse_resolve(args)),
+        Some("tui") => tui::launch(parse_run(args)),
         _ => usage(),
     };
     if let Err(error) = result {
@@ -255,7 +387,7 @@ fn open_campaign_store(state: &Path) -> Result<EventStore, String> {
 }
 
 fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
-    let state = campaign_state(&options.state, &options.campaign);
+    let state = campaign_state(&options.state, &options.campaign)?;
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let ledger = Ledger::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
@@ -303,7 +435,7 @@ fn print_indented(label: &str, value: &str) {
 }
 
 fn show(options: &ShowOptions) -> Result<(), String> {
-    let state = campaign_state(&options.state, &options.campaign);
+    let state = campaign_state(&options.state, &options.campaign)?;
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let ledger = Ledger::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
@@ -377,7 +509,7 @@ fn show(options: &ShowOptions) -> Result<(), String> {
 
 fn print_report(options: &ReportOptions) -> Result<(), String> {
     debug_assert_eq!(options.format, "md");
-    let state = campaign_state(&options.state, &options.campaign);
+    let state = campaign_state(&options.state, &options.campaign)?;
     let store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
@@ -528,7 +660,7 @@ fn title_case(value: &str) -> String {
 fn resolve(options: &ResolveOptions) -> Result<(), String> {
     let status = Status::parse(&options.status)
         .ok_or_else(|| format!("unknown status `{}`", options.status))?;
-    let state = campaign_state(&options.state, &options.campaign);
+    let state = campaign_state(&options.state, &options.campaign)?;
     let mut store = open_campaign_store(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
@@ -548,8 +680,8 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
     Ok(())
 }
 
-fn run(options: &Options) -> Result<(), String> {
-    let state = options.state_dir();
+fn run(options: &Options) -> Result<RunVerdict, String> {
+    let state = options.resolved_state_dir()?;
     std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
     let mut store =
@@ -666,13 +798,59 @@ fn run(options: &Options) -> Result<(), String> {
 
     let verdict = kernel.publish_report(&report, *loaded.convergence())?;
     println!("verdict  {verdict:?}");
+    Ok(verdict)
+}
+
+fn exit_for_verdict(verdict: RunVerdict) {
     match verdict {
-        RunVerdict::Pass => Ok(()),
-        RunVerdict::Fail(_) => {
-            std::process::exit(3);
+        RunVerdict::Pass => {}
+        RunVerdict::Fail(_) => std::process::exit(3),
+        RunVerdict::Incomplete { .. } => std::process::exit(4),
+    }
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::{Options, validate_campaign_name};
+
+    #[test]
+    fn campaign_names_cannot_redirect_state() {
+        for invalid in ["", "../reviewers/architecture", "nested/name", "."] {
+            assert!(validate_campaign_name(invalid).is_err());
         }
-        RunVerdict::Incomplete { .. } => {
-            std::process::exit(4);
+        for valid in ["heavy", "reviewctl-tui", "round_4", "v2.1-audit"] {
+            assert!(validate_campaign_name(valid).is_ok());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_runs_symlink_cannot_redirect_state() {
+        use std::os::unix::fs::symlink;
+
+        let repository = std::env::temp_dir().join(format!(
+            "reviewctl-state-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(repository.join(".review/reviewers")).unwrap();
+        symlink("reviewers", repository.join(".review/runs")).unwrap();
+        let options = Options {
+            repo: repository.clone(),
+            pipeline: ".review/pipelines/heavy.toml".into(),
+            state: Some(repository.join(".review/runs/architecture")),
+            campaign: Some("architecture".to_string()),
+            focus: None,
+            authority: None,
+            uncommitted: false,
+            restart_round: false,
+            timeout: None,
+        };
+        let error = options.resolved_state_dir().unwrap_err();
+        assert!(error.contains("is a symlink"));
+        std::fs::remove_dir_all(repository).unwrap();
     }
 }
