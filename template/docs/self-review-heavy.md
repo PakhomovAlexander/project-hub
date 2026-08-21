@@ -243,6 +243,32 @@ lockfile on every test run, so forgetting to re-lock fails CI, not a live review
 
 ### `reviewctl` flags
 
+`reviewctl tui` opens the interactive configuration-proposal and run surface. It discovers the
+packaged reviewers already selected by `--pipeline` and can draft model/effort changes without
+mutating the repository. Press `s` to export an explicit patch under the run state's
+`config-proposals/` directory. Apply and review that patch, commit it, then start a new Campaign
+whose `--authority` names that commit by relaunching the TUI. The in-memory draft remains marked
+pending after export because an exported file is not execution authority. A resumed Campaign keeps
+its original reviewer authority and ignores a newly supplied `--authority`.
+
+Alternatively, keep the TUI open while applying and committing the patch, press `R` to reload the
+now-authoritative worktree configuration, then select a new Campaign name and the committed
+authority before pressing `r`. Reload refuses package or lock bytes that are still inconsistent.
+
+Backend and graph topology remain package/pipeline-owned and are read-only in the TUI. Press `r`
+only when no configuration proposal is pending; it launches the ordinary `reviewctl run` path and
+therefore uses the Campaign's pinned authority, never in-memory or working-tree reviewer settings.
+The alternate screen is suspended while checks and reviewers execute and restored for Pass,
+Fail, and Incomplete verdicts.
+
+The TUI uses Vim-style navigation: `j`/`k`, `g`/`G`, and `Ctrl-U`/`Ctrl-D` move; `h`/`l` or
+`Tab` switch panes; `Enter` edits or toggles the selected value; `s` exports a configuration
+patch; `R` reloads applied configuration; `r` runs pinned authority; `Esc` cancels an edit; and
+`q` quits. Proposal export refuses
+package or lock bytes changed by another process while the interface was open. Proposal state may
+be outside the repository or below `.review/runs/`; paths that could alias captured reviewer,
+pipeline, or lock content are refused.
+
 | Flag | Meaning |
 |---|---|
 | `--campaign NAME` | Join a persistent ledger; the same name continues the pinned Campaign. Without it, `local` is the Campaign name. |
