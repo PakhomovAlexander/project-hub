@@ -21,6 +21,8 @@ pub enum EventType {
     AttemptReleasedV1,
     #[serde(rename = "CheckCompleted@1")]
     CheckCompletedV1,
+    #[serde(rename = "CampaignOpened@1")]
+    CampaignOpenedV1,
     #[serde(rename = "FindingReported@1")]
     FindingReportedV1,
     #[serde(rename = "FindingResolved@1")]
@@ -37,18 +39,23 @@ pub enum EventType {
     RunReportV1,
     #[serde(rename = "RunReport@2")]
     RunReportV2,
+    #[serde(rename = "RoundInputSuperseded@1")]
+    RoundInputSupersededV1,
+    #[serde(rename = "RoundStarted@1")]
+    RoundStartedV1,
     #[serde(rename = "SourceCaptured@1")]
     SourceCapturedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 18] = [
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
         Self::AttemptFailedV1,
         Self::AttemptFencedV1,
         Self::AttemptReleasedV1,
         Self::CheckCompletedV1,
+        Self::CampaignOpenedV1,
         Self::FindingReportedV1,
         Self::FindingResolvedV1,
         Self::GateDecisionV1,
@@ -57,6 +64,8 @@ impl EventType {
         Self::NodeOutputReceiptV1,
         Self::RunReportV1,
         Self::RunReportV2,
+        Self::RoundInputSupersededV1,
+        Self::RoundStartedV1,
         Self::SourceCapturedV1,
     ];
 
@@ -68,6 +77,7 @@ impl EventType {
             Self::AttemptFencedV1 => "AttemptFenced@1",
             Self::AttemptReleasedV1 => "AttemptReleased@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
+            Self::CampaignOpenedV1 => "CampaignOpened@1",
             Self::FindingReportedV1 => "FindingReported@1",
             Self::FindingResolvedV1 => "FindingResolved@1",
             Self::GateDecisionV1 => "GateDecision@1",
@@ -76,6 +86,8 @@ impl EventType {
             Self::NodeOutputReceiptV1 => "NodeOutputReceipt@1",
             Self::RunReportV1 => "RunReport@1",
             Self::RunReportV2 => "RunReport@2",
+            Self::RoundInputSupersededV1 => "RoundInputSuperseded@1",
+            Self::RoundStartedV1 => "RoundStarted@1",
             Self::SourceCapturedV1 => "SourceCaptured@1",
         }
     }
@@ -88,6 +100,7 @@ impl EventType {
             Self::AttemptFencedV1 => ("AttemptFenced", 1),
             Self::AttemptReleasedV1 => ("AttemptReleased", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
+            Self::CampaignOpenedV1 => ("CampaignOpened", 1),
             Self::FindingReportedV1 => ("FindingReported", 1),
             Self::FindingResolvedV1 => ("FindingResolved", 1),
             Self::GateDecisionV1 => ("GateDecision", 1),
@@ -96,6 +109,8 @@ impl EventType {
             Self::NodeOutputReceiptV1 => ("NodeOutputReceipt", 1),
             Self::RunReportV1 => ("RunReport", 1),
             Self::RunReportV2 => ("RunReport", 2),
+            Self::RoundInputSupersededV1 => ("RoundInputSuperseded", 1),
+            Self::RoundStartedV1 => ("RoundStarted", 1),
             Self::SourceCapturedV1 => ("SourceCaptured", 1),
         }
     }
@@ -141,6 +156,7 @@ impl std::str::FromStr for EventType {
             "AttemptFenced@1" => Ok(Self::AttemptFencedV1),
             "AttemptReleased@1" => Ok(Self::AttemptReleasedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
+            "CampaignOpened@1" => Ok(Self::CampaignOpenedV1),
             "FindingReported@1" => Ok(Self::FindingReportedV1),
             "FindingResolved@1" => Ok(Self::FindingResolvedV1),
             "GateDecision@1" => Ok(Self::GateDecisionV1),
@@ -149,6 +165,8 @@ impl std::str::FromStr for EventType {
             "NodeOutputReceipt@1" => Ok(Self::NodeOutputReceiptV1),
             "RunReport@1" => Ok(Self::RunReportV1),
             "RunReport@2" => Ok(Self::RunReportV2),
+            "RoundInputSuperseded@1" => Ok(Self::RoundInputSupersededV1),
+            "RoundStarted@1" => Ok(Self::RoundStartedV1),
             "SourceCaptured@1" => Ok(Self::SourceCapturedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
@@ -276,7 +294,8 @@ impl RunReportPayloadV2 {
                             outcome.node
                         ));
                     }
-                    if let Some(artifact) = output_artifacts.iter().find(|id| !is_digest(id)) {
+                    if let Some(artifact) = output_artifacts.iter().find(|id| !crate::is_digest(id))
+                    {
                         return Err(format!(
                             "completed node `{}` contains invalid artifact id `{artifact}`",
                             outcome.node
@@ -317,7 +336,10 @@ impl RunReportPayloadV2 {
             })
             .collect();
         let verdict_validation: Result<(), String> = match &self.verdict {
-            RunVerdictV2::Pass | RunVerdictV2::Fail { .. } if !unresolved.is_empty() => {
+            RunVerdictV2::Pass
+            | RunVerdictV2::Fail {
+                reason: RunFailureReasonV2::NotConverged,
+            } if !unresolved.is_empty() => {
                 Err("a terminal pass/fail report cannot contain failed or suppressed nodes".into())
             }
             RunVerdictV2::Pass if !self.blocked_gates.is_empty() => {
@@ -384,7 +406,7 @@ impl LegacyRunReportV1 {
             return Err("a frozen RunReport@1 must contain at least one node outcome".into());
         }
         let mut nodes = std::collections::BTreeSet::new();
-        let mut unresolved = 0_usize;
+        let mut unresolved = Vec::new();
         for outcome in &self.outcomes {
             if outcome.node.trim().is_empty() || !nodes.insert(outcome.node.as_str()) {
                 return Err("a frozen RunReport@1 contains an empty or duplicate node".into());
@@ -392,7 +414,10 @@ impl LegacyRunReportV1 {
             match outcome.status.as_str() {
                 "completed" if outcome.detail.is_object() => {}
                 "failed" if outcome.detail.as_str().is_some_and(|text| !text.is_empty()) => {
-                    unresolved += 1;
+                    unresolved.push((
+                        outcome.node.clone(),
+                        outcome.detail.as_str().unwrap_or_default().to_string(),
+                    ));
                 }
                 "suppressed"
                     if matches!(
@@ -400,7 +425,10 @@ impl LegacyRunReportV1 {
                         Some("GateBlocked" | "UpstreamMissing")
                     ) =>
                 {
-                    unresolved += 1;
+                    unresolved.push((
+                        outcome.node.clone(),
+                        outcome.detail.as_str().unwrap_or_default().to_string(),
+                    ));
                 }
                 status => {
                     return Err(format!(
@@ -423,21 +451,113 @@ impl LegacyRunReportV1 {
             return Err("frozen RunReport@1 spent_tokens exceeds the safe-integer bound".into());
         }
         match self.verdict.as_str() {
-            "Pass" if unresolved == 0 && blocked.is_empty() => Ok(true),
-            "Fail(NotConverged)" | "Fail(Exhausted)" if unresolved == 0 => Ok(true),
-            verdict
-                if verdict.starts_with("Incomplete { missing: [")
-                    && verdict.ends_with("] }")
-                    && verdict != "Incomplete { missing: [] }"
-                    && unresolved > 0 =>
-            {
-                Ok(false)
-            }
+            "Pass" if unresolved.is_empty() && blocked.is_empty() => Ok(true),
+            "Fail(NotConverged)" | "Fail(Exhausted)" if unresolved.is_empty() => Ok(true),
+            verdict if verdict == frozen_incomplete_verdict(&unresolved) => Ok(false),
             verdict => Err(format!(
                 "frozen RunReport@1 verdict `{verdict}` contradicts its outcomes"
             )),
         }
     }
+}
+
+fn frozen_incomplete_verdict(missing: &[(String, String)]) -> String {
+    let entries = missing
+        .iter()
+        .map(|(node, reason)| {
+            format!(
+                "({}, {})",
+                serde_json::to_string(node).expect("String is JSON"),
+                serde_json::to_string(reason).expect("String is JSON")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Incomplete {{ missing: [{entries}] }}")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptDispatchedPayloadV1 {
+    pub reserved: Option<u64>,
+    pub prior_findings: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptAdmittedPayloadV1 {
+    pub selection: String,
+    pub cost_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance_artifact: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptFailedPayloadV1 {
+    pub error: String,
+    pub charged: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptFencedPayloadV1 {
+    pub reason: String,
+    pub charged: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptReleasedPayloadV1 {
+    pub error: String,
+    pub released: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CheckStatusV1 {
+    Passed,
+    Failed,
+    NotRun,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckCompletedPayloadV1 {
+    name: String,
+    status: CheckStatusV1,
+    exit_code: Option<i32>,
+    reason: Option<String>,
+    program: Option<String>,
+    args: Vec<crate::Arg>,
+    stdout: Option<String>,
+    stderr: Option<String>,
+    required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+enum GateOutcomeV1 {
+    Passed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateDecisionPayloadV1 {
+    outcome: GateOutcomeV1,
+    blocking: Vec<String>,
+    reasons: Vec<String>,
+    executed: usize,
+    required: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenerationAdvancedPayloadV1 {
+    round: u32,
 }
 
 /// Validate payloads whose versioned Rust contract is authoritative at the event boundary.
@@ -448,6 +568,119 @@ pub fn validate_event_payload(
     payload: &serde_json::Value,
 ) -> Result<(), String> {
     match event_type {
+        EventType::AttemptDispatchedV1 => {
+            let value: AttemptDispatchedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptDispatched@1: {error}"))?;
+            if value
+                .prior_findings
+                .as_deref()
+                .is_some_and(|artifact| !crate::is_digest(artifact))
+            {
+                return Err("AttemptDispatched@1 has an invalid prior Finding Set ID".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptAdmittedV1 => {
+            let value: AttemptAdmittedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptAdmitted@1: {error}"))?;
+            if !matches!(value.selection.as_str(), "selected" | "quarantined")
+                || value
+                    .result_artifact
+                    .as_deref()
+                    .is_some_and(|artifact| !crate::is_digest(artifact))
+                || value
+                    .provenance_artifact
+                    .as_deref()
+                    .is_some_and(|artifact| !crate::is_digest(artifact))
+            {
+                return Err("AttemptAdmitted@1 has invalid selection or artifact IDs".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptFailedV1 => {
+            let value: AttemptFailedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptFailed@1: {error}"))?;
+            if value.error.trim().is_empty() {
+                return Err("AttemptFailed@1 has an empty error".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptFencedV1 => {
+            let value: AttemptFencedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptFenced@1: {error}"))?;
+            if value.reason.trim().is_empty() {
+                return Err("AttemptFenced@1 has an empty reason".into());
+            }
+            Ok(())
+        }
+        EventType::AttemptReleasedV1 => {
+            let value: AttemptReleasedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("AttemptReleased@1: {error}"))?;
+            if value.error.trim().is_empty() {
+                return Err("AttemptReleased@1 has an empty error".into());
+            }
+            Ok(())
+        }
+        EventType::CheckCompletedV1 => {
+            let value: CheckCompletedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("CheckCompleted@1: {error}"))?;
+            if value.name.trim().is_empty()
+                || value
+                    .stdout
+                    .as_deref()
+                    .into_iter()
+                    .chain(value.stderr.as_deref())
+                    .any(|artifact| !crate::is_digest(artifact))
+            {
+                return Err("CheckCompleted@1 has invalid identity or artifacts".into());
+            }
+            Ok(())
+        }
+        EventType::GateDecisionV1 => {
+            let value: GateDecisionPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("GateDecision@1: {error}"))?;
+            if value.required > value.executed
+                || value.blocking.iter().any(|name| name.trim().is_empty())
+                || value.reasons.iter().any(|reason| reason.trim().is_empty())
+                || (value.outcome == GateOutcomeV1::Passed
+                    && (!value.blocking.is_empty() || !value.reasons.is_empty()))
+            {
+                return Err("GateDecision@1 is internally inconsistent".into());
+            }
+            Ok(())
+        }
+        EventType::FindingReportedV1 => validate_finding_reported(payload),
+        EventType::FindingResolvedV1 => validate_finding_resolved(payload),
+        EventType::GenerationAdvancedV1 => {
+            let value: GenerationAdvancedPayloadV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| format!("GenerationAdvanced@1: {error}"))?;
+            if value.round == 0 {
+                return Err("GenerationAdvanced@1 has a zero round".into());
+            }
+            Ok(())
+        }
+        EventType::CampaignOpenedV1 => {
+            let opened = serde_json::from_value::<crate::CampaignOpenedPayloadV1>(payload.clone())
+                .map_err(|error| format!("CampaignOpened@1: {error}"))?;
+            opened
+                .validate()
+                .map_err(|error| format!("CampaignOpened@1: {error}"))
+        }
+        EventType::RoundStartedV1 => {
+            let started = serde_json::from_value::<crate::RoundStartedPayloadV1>(payload.clone())
+                .map_err(|error| format!("RoundStarted@1: {error}"))?;
+            started
+                .validate()
+                .map_err(|error| format!("RoundStarted@1: {error}"))
+        }
+        EventType::RoundInputSupersededV1 => {
+            let superseded =
+                serde_json::from_value::<crate::RoundInputSupersededPayloadV1>(payload.clone())
+                    .map_err(|error| format!("RoundInputSuperseded@1: {error}"))?;
+            superseded
+                .validate()
+                .map_err(|error| format!("RoundInputSuperseded@1: {error}"))
+        }
         EventType::NodeInvocationV1 => {
             let invocation = serde_json::from_value::<NodeInvocationPayloadV1>(payload.clone())
                 .map_err(|error| format!("NodeInvocation@1: {error}"))?;
@@ -477,8 +710,96 @@ pub fn validate_event_payload(
                 .validate()
                 .map_err(|error| format!("RunReport@2: {error}"))
         }
-        _ => Ok(()),
+        EventType::SourceCapturedV1 => Ok(()),
     }
+}
+
+fn validate_finding_reported(payload: &serde_json::Value) -> Result<(), String> {
+    let object = payload
+        .as_object()
+        .ok_or("FindingReported@1 payload is not an object")?;
+    let round = object
+        .get("round")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|round| *round > 0)
+        .ok_or("FindingReported@1 has an invalid round")?;
+    let _ = round;
+    let key = object
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("FindingReported@1 has no key")?;
+    if key.trim().is_empty() {
+        return Err("FindingReported@1 has an empty key".into());
+    }
+    let source = object
+        .get("source")
+        .and_then(serde_json::Value::as_str)
+        .filter(|source| !source.is_empty())
+        .ok_or("FindingReported@1 has no source")?;
+    let _ = source;
+    if let Some(report_id) = object.get("report_id").and_then(serde_json::Value::as_str) {
+        if !crate::is_digest(report_id) {
+            return Err("FindingReported@1 has invalid live report provenance".into());
+        }
+    } else {
+        if object.get("imported").and_then(serde_json::Value::as_bool) != Some(true) {
+            return Err("FindingReported@1 is neither a live report nor a legacy import".into());
+        }
+        if !matches!(
+            object.get("severity").and_then(serde_json::Value::as_str),
+            Some("minor" | "major" | "blocker")
+        ) || object
+            .get("file")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+            || object
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(str::is_empty)
+            || object
+                .get("body")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(str::is_empty)
+            || object
+                .get("line")
+                .is_some_and(|line| !line.is_null() && line.as_i64().is_none_or(|line| line <= 0))
+            || object.get("confidence").is_some_and(|confidence| {
+                !confidence.is_null()
+                    && confidence
+                        .as_f64()
+                        .is_none_or(|confidence| !(0.0..=1.0).contains(&confidence))
+            })
+        {
+            return Err("FindingReported@1 has an invalid legacy projection".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_finding_resolved(payload: &serde_json::Value) -> Result<(), String> {
+    let object = payload
+        .as_object()
+        .ok_or("FindingResolved@1 payload is not an object")?;
+    let valid_status = matches!(
+        object.get("status").and_then(serde_json::Value::as_str),
+        Some("open" | "fixed" | "rejected" | "wontfix" | "contested")
+    );
+    if object
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(str::is_empty)
+        || object
+            .get("round")
+            .and_then(serde_json::Value::as_u64)
+            .is_none_or(|round| round == 0)
+        || !valid_status
+        || object
+            .get("note")
+            .is_some_and(|note| !note.is_null() && note.as_str().is_none())
+    {
+        return Err("FindingResolved@1 has invalid identity, round, or status".into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -528,15 +849,6 @@ pub struct NodeOutputReceiptPayloadV1 {
     pub outputs: Vec<PortArtifactsV1>,
 }
 
-fn is_digest(value: &str) -> bool {
-    value.strip_prefix("sha256:").is_some_and(|hex| {
-        hex.len() == 64
-            && hex
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    })
-}
-
 pub fn is_artifact_type(value: &str) -> bool {
     let Some((namespace, versioned_name)) = value.split_once('/') else {
         return false;
@@ -577,7 +889,7 @@ fn validate_ports(node: &str, ports: &[PortArtifactsV1]) -> Result<(), String> {
         }
         let ids: std::collections::BTreeSet<&str> =
             port.artifact_ids.iter().map(String::as_str).collect();
-        if ids.len() != port.artifact_ids.len() || ids.iter().any(|id| !is_digest(id)) {
+        if ids.len() != port.artifact_ids.len() || ids.iter().any(|id| !crate::is_digest(id)) {
             return Err(format!(
                 "port `{}` has invalid or duplicate artifacts",
                 port.port
@@ -603,7 +915,7 @@ fn validate_ports(node: &str, ports: &[PortArtifactsV1]) -> Result<(), String> {
         if port
             .subject_snapshot_id
             .as_deref()
-            .is_some_and(|id| !is_digest(id))
+            .is_some_and(|id| !crate::is_digest(id))
         {
             return Err(format!(
                 "port `{}` has an invalid subject snapshot",

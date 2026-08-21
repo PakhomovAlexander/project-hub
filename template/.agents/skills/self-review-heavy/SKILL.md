@@ -46,10 +46,11 @@ fresh campaign to escape an inconvenient ledger.
 ## 2 · Run a round
 
 ```
-reviewctl run --campaign <name> [--focus "<what to weigh this round>"]
+reviewctl run --campaign <name> --authority <trusted-rev> [--restart-round] [--focus "<campaign focus>"]
 ```
 
-The kernel captures HEAD, runs the gate checks in a read-only sandbox, dispatches the
+`--authority` is required only when the Campaign opens. Continuations reuse the stored Campaign
+Manifest and do not resolve that ref again. The kernel then captures HEAD, runs the gate checks in a read-only sandbox, dispatches the
 reviewers concurrently under the pipeline's budgets, reduces their reports into the
 ledger, and prints every node outcome, the findings, the spend, and the verdict. From
 round 2 on, every reviewer receives the campaign's prior findings as labelled data and is
@@ -96,6 +97,10 @@ Commit the round's fixes, then run the same campaign again. Repeat until:
   budgets, or the convergence policy mid-campaign to reach green.
 - **`Exhausted`** — the round cap hit with work outstanding. Stop and report honestly;
   the owner decides whether to raise `max_rounds` or ship with the ledger open.
+
+After an incomplete run, a plain rerun resumes the same pinned Subject and only retries
+missing work. If fixes were committed after that incomplete run, pass `--restart-round` to
+supersede its epoch, capture the new `HEAD`, and rerun every node.
 
 ## 5 · Report
 

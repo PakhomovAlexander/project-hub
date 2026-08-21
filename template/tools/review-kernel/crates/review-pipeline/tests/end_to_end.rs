@@ -15,6 +15,137 @@ use review_pipeline::Kernel;
 use review_source_git::{Capture, Repo};
 use review_store::{Cas, ConvergencePolicy, EventStore, Status, Verdict};
 
+const HEAVY_AUTHORITY: &str = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = ["decision"]
+[[nodes]]
+id = "architecture"
+kind = "reviewer"
+inputs = ["gate"]
+outputs = ["result"]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "performance"
+kind = "reviewer"
+inputs = ["gate"]
+outputs = ["result"]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = ["architecture", "performance"]
+outputs = ["reports"]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["findings"]
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "architecture", port = "gate" }
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "performance", port = "gate" }
+[[edges]]
+from = { node = "architecture", port = "result" }
+to = { node = "gather", port = "architecture" }
+[[edges]]
+from = { node = "performance", port = "result" }
+to = { node = "gather", port = "performance" }
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+"#;
+
+const AWKWARD_AUTHORITY: &str = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = ["decision"]
+[[nodes]]
+id = "gather"
+kind = "reviewer"
+inputs = ["gate"]
+outputs = ["result"]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "collect"
+kind = "gather"
+inputs = ["reports"]
+outputs = ["reports"]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["findings"]
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "gather", port = "gate" }
+[[edges]]
+from = { node = "gather", port = "result" }
+to = { node = "collect", port = "reports" }
+[[edges]]
+from = { node = "collect", port = "reports" }
+to = { node = "ledger", port = "reports" }
+"#;
+
+const UNWIRED_AUTHORITY: &str = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = ["decision"]
+[[nodes]]
+id = "architecture"
+kind = "reviewer"
+inputs = ["gate"]
+outputs = ["result"]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "sidecar"
+kind = "reviewer"
+inputs = ["gate"]
+outputs = ["result"]
+gated_by = "gate"
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = ["architecture"]
+outputs = ["reports"]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["findings"]
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "architecture", port = "gate" }
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "sidecar", port = "gate" }
+[[edges]]
+from = { node = "architecture", port = "result" }
+to = { node = "gather", port = "architecture" }
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+"#;
+
 /// A repository with a defect to find.
 fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -129,16 +260,23 @@ fn a_full_review_runs_and_lands_in_the_ledger() {
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
     let before_state = review_source_git::worktree_state(&repo).unwrap();
 
-    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
-        .with_checks(vec![passing_check()])
-        .with_reviewer(
-            "architecture",
-            reviewer("architecture", "Unbounded loop never yields", "major"),
-        )
-        .with_reviewer(
-            "performance",
-            reviewer("performance", "Unbounded loop never yields", "blocker"),
-        );
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        None,
+        HEAVY_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    .with_reviewer(
+        "architecture",
+        reviewer("architecture", "Unbounded loop never yields", "major"),
+    )
+    .with_reviewer(
+        "performance",
+        reviewer("performance", "Unbounded loop never yields", "blocker"),
+    );
 
     let plan = heavy_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
@@ -193,16 +331,23 @@ fn a_failing_gate_means_no_reviewer_ever_runs() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
-        .with_checks(vec![failing_check()])
-        .with_reviewer(
-            "architecture",
-            reviewer("architecture", "should never be reported", "major"),
-        )
-        .with_reviewer(
-            "performance",
-            reviewer("performance", "should never be reported", "major"),
-        );
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        None,
+        HEAVY_AUTHORITY,
+    )
+    .with_checks(vec![failing_check()])
+    .with_reviewer(
+        "architecture",
+        reviewer("architecture", "should never be reported", "major"),
+    )
+    .with_reviewer(
+        "performance",
+        reviewer("performance", "should never be reported", "major"),
+    );
 
     let plan = heavy_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
@@ -228,16 +373,18 @@ fn a_failing_gate_means_no_reviewer_ever_runs() {
     let events = store.replay("run").unwrap();
     assert_eq!(
         events.len(),
-        4,
-        "one invocation, one CheckCompleted, one GateDecision, and one durable receipt"
+        6,
+        "campaign and Round authority plus one invocation, check, decision, and receipt"
     );
-    assert_eq!(events[0].event_type, "NodeInvocation@1");
-    assert_eq!(events[0].payload["node"], "gate");
-    assert_eq!(events[1].event_type, "CheckCompleted@1");
-    assert_eq!(events[1].payload["status"], "failed");
-    assert_eq!(events[2].event_type, "GateDecision@1");
-    assert_eq!(events[2].payload["outcome"], "Blocked");
-    assert_eq!(events[3].event_type, "NodeOutputReceipt@1");
+    assert_eq!(events[0].event_type, "CampaignOpened@1");
+    assert_eq!(events[1].event_type, "RoundStarted@1");
+    assert_eq!(events[2].event_type, "NodeInvocation@1");
+    assert_eq!(events[2].payload["node"], "gate");
+    assert_eq!(events[3].event_type, "CheckCompleted@1");
+    assert_eq!(events[3].payload["status"], "failed");
+    assert_eq!(events[4].event_type, "GateDecision@1");
+    assert_eq!(events[4].payload["outcome"], "Blocked");
+    assert_eq!(events[5].event_type, "NodeOutputReceipt@1");
 }
 
 /// Same inputs, same pipeline, twice — the ledger and the verdict must not move.
@@ -251,10 +398,17 @@ fn two_runs_of_the_same_review_agree() {
         let cas = Cas::open(workspace.path().join("cas")).unwrap();
         let mut store = EventStore::open(workspace.path().join("events.sqlite")).unwrap();
         let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
-        let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
-            .with_checks(vec![passing_check()])
-            .with_reviewer("architecture", reviewer("architecture", "A", "major"))
-            .with_reviewer("performance", reviewer("performance", "B", "minor"));
+        let kernel = support::whole_tree_kernel_for_pipeline(
+            &cas,
+            &mut store,
+            "run",
+            snapshot.manifest.clone(),
+            None,
+            HEAVY_AUTHORITY,
+        )
+        .with_checks(vec![passing_check()])
+        .with_reviewer("architecture", reviewer("architecture", "A", "major"))
+        .with_reviewer("performance", reviewer("performance", "B", "minor"));
         let plan = heavy_pipeline().plan().unwrap();
         Scheduler::new(&plan).run(&kernel);
 
@@ -348,10 +502,23 @@ gate = "major"
 
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
-    let mut kernel =
-        Kernel::from_loaded(&cas, &mut store, "run", snapshot.manifest.clone(), &loaded)
-            .unwrap()
-            .with_checks(loaded.checks().to_vec());
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &snapshot.manifest,
+        definition,
+    );
+    let mut kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_checks(loaded.checks().to_vec());
     for (node, command) in loaded.reviewers() {
         kernel = kernel.with_reviewer(node.clone(), command.clone());
     }
@@ -382,12 +549,19 @@ fn a_reviewer_named_gather_still_runs() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
-        .with_checks(vec![passing_check()])
-        .with_reviewer(
-            "gather",
-            reviewer("gather", "Found by the awkwardly named reviewer", "major"),
-        );
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        None,
+        AWKWARD_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    .with_reviewer(
+        "gather",
+        reviewer("gather", "Found by the awkwardly named reviewer", "major"),
+    );
 
     let pipeline = Pipeline::default()
         .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
@@ -442,10 +616,17 @@ fn an_unwired_reviewer_result_never_reaches_the_ledger() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
-        .with_checks(vec![passing_check()])
-        .with_reviewer("architecture", reviewer("architecture", "Wired", "major"))
-        .with_reviewer("sidecar", reviewer("sidecar", "Unwired", "blocker"));
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        None,
+        UNWIRED_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    .with_reviewer("architecture", reviewer("architecture", "Wired", "major"))
+    .with_reviewer("sidecar", reviewer("sidecar", "Unwired", "blocker"));
 
     // `sidecar` runs (it is a planned node) but nothing consumes its result port.
     let pipeline = Pipeline::default()
@@ -508,11 +689,18 @@ fn the_event_log_tells_the_whole_story() {
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
 
-    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
-        .with_checks(vec![passing_check()])
-        .with_budgets(1000, 10000)
-        .with_reviewer("architecture", reviewer("architecture", "A", "major"))
-        .with_reviewer("performance", reviewer("performance", "B", "minor"));
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        None,
+        HEAVY_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    .with_budgets(1000, 10000)
+    .with_reviewer("architecture", reviewer("architecture", "A", "major"))
+    .with_reviewer("performance", reviewer("performance", "B", "minor"));
 
     let plan = heavy_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);
@@ -541,6 +729,7 @@ fn the_event_log_tells_the_whole_story() {
             "AttemptAdmitted@1",
             "AttemptDispatched@1",
             "AttemptDispatched@1",
+            "CampaignOpened@1",
             "CheckCompleted@1",
             "FindingReported@1",
             "FindingReported@1",
@@ -555,11 +744,13 @@ fn the_event_log_tells_the_whole_story() {
             "NodeOutputReceipt@1",
             "NodeOutputReceipt@1",
             "NodeOutputReceipt@1",
+            "RoundStarted@1",
             "RunReport@2",
         ],
         "the log holds the whole run"
     );
-    assert_eq!(types[0], "NodeInvocation@1");
+    assert_eq!(types[0], "CampaignOpened@1");
+    assert_eq!(types[1], "RoundStarted@1");
     assert_eq!(*types.last().unwrap(), "RunReport@2");
     for node in ["architecture", "performance"] {
         let lifecycle: Vec<&str> = events
@@ -602,14 +793,18 @@ fn the_event_log_tells_the_whole_story() {
             .flat_map(|port| port["artifact_ids"].as_array().unwrap())
             .map(|id| id.as_str().unwrap())
             .collect();
-        assert_eq!(
-            selected,
-            receipt
-                .artifact_refs
+        assert!(
+            selected
                 .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
+                .all(|artifact| receipt.artifact_refs.iter().any(|id| id == artifact)),
+            "receipt lost a selected output artifact"
         );
+        assert!(
+            receipt.artifact_refs.len() > selected.len(),
+            "receipt is not bound to Round authority"
+        );
+        assert!(receipt.causation_id.is_some());
+        assert!(receipt.correlation_id.is_some());
     }
 }
 
@@ -631,14 +826,21 @@ fn a_suppressed_gather_does_not_erase_the_attempt_log() {
         "/bin/sh",
         vec![Arg::literal("-c"), Arg::literal("echo boom >&2; exit 7")],
     );
-    let kernel = support::whole_tree_kernel(&cas, &mut store, "run", snapshot.manifest.clone())
-        .with_checks(vec![passing_check()])
-        .with_budgets(1000, 10000)
-        .with_reviewer(
-            "architecture",
-            reviewer("architecture", "Found it", "major"),
-        )
-        .with_reviewer("performance", boom);
+    let kernel = support::whole_tree_kernel_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        snapshot.manifest.clone(),
+        None,
+        HEAVY_AUTHORITY,
+    )
+    .with_checks(vec![passing_check()])
+    .with_budgets(1000, 10000)
+    .with_reviewer(
+        "architecture",
+        reviewer("architecture", "Found it", "major"),
+    )
+    .with_reviewer("performance", boom);
 
     let plan = heavy_pipeline().plan().unwrap();
     let report = Scheduler::new(&plan).run(&kernel);

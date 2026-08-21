@@ -98,6 +98,7 @@ pub struct Ingest<'a> {
     cas: &'a Cas,
     run_id: String,
     ledger: Ledger,
+    round_event_id: Option<String>,
 }
 
 impl<'a> Ingest<'a> {
@@ -113,7 +114,21 @@ impl<'a> Ingest<'a> {
             cas,
             run_id,
             ledger,
+            round_event_id: None,
         })
+    }
+
+    /// Bind reducer and generation events to the active durable Round epoch.
+    pub fn under_round(mut self, round_event_id: impl Into<String>) -> Self {
+        self.round_event_id = Some(round_event_id.into());
+        self
+    }
+
+    fn bind_round(&self, event: NewEvent) -> NewEvent {
+        match &self.round_event_id {
+            Some(round) => event.caused_by(round),
+            None => event.legacy_import(),
+        }
     }
 
     pub fn ledger(&self) -> &Ledger {
@@ -130,7 +145,10 @@ impl<'a> Ingest<'a> {
         let event = self.store.append(
             &self.run_id,
             self.cas,
-            NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": round })),
+            self.bind_round(NewEvent::new(
+                EVENT_GENERATION_ADVANCED,
+                json!({ "round": round }),
+            )),
         )?;
         self.ledger.apply_event(&event, self.cas)?;
         Ok(round)
@@ -163,17 +181,35 @@ impl<'a> Ingest<'a> {
         self.add_stage_output_inner(source, stage, true)
     }
 
+    /// Atomically admit every live reviewer result feeding one ledger node. Validation or
+    /// storage failure leaves the event log untouched, so a retry cannot inherit half a
+    /// reduction and duplicate the reviewers that were committed first.
+    pub fn add_live_stage_outputs(
+        &mut self,
+        stages: &[(&str, &LegacyStageOutput)],
+    ) -> Result<AddSummary, StoreError> {
+        self.add_stage_outputs_inner(stages, true)
+    }
+
     fn add_stage_output_inner(
         &mut self,
         source: &str,
         stage: &LegacyStageOutput,
         strict: bool,
     ) -> Result<AddSummary, StoreError> {
+        self.add_stage_outputs_inner(&[(source, stage)], strict)
+    }
+
+    fn add_stage_outputs_inner(
+        &mut self,
+        stages: &[(&str, &LegacyStageOutput)],
+        strict: bool,
+    ) -> Result<AddSummary, StoreError> {
         let round = self.ledger.round;
         let mut summary = AddSummary::default();
         let mut projected = self.ledger.clone();
         let mut events = Vec::new();
-        let existing_reports: BTreeSet<(String, String, u32, String)> = self
+        let mut existing_reports: BTreeSet<(String, String, u32, String)> = self
             .ledger
             .findings()
             .into_iter()
@@ -189,109 +225,110 @@ impl<'a> Ingest<'a> {
             })
             .collect();
 
-        for (index, finding) in stage.findings.iter().enumerate() {
-            let report = match finding.clone().into_report(index) {
-                Ok(report) => report,
-                Err(reason) if !strict => {
-                    eprintln!("add: skipping {source} finding ({reason})");
+        for (source, stage) in stages {
+            for (index, finding) in stage.findings.iter().enumerate() {
+                let report = match finding.clone().into_report(index) {
+                    Ok(report) => report,
+                    Err(reason) if !strict => {
+                        eprintln!("add: skipping {source} finding ({reason})");
+                        continue;
+                    }
+                    Err(reason) => {
+                        return Err(StoreError::Conflict(format!(
+                            "{source} finding {index} violates FindingReport@1: {reason}"
+                        )));
+                    }
+                };
+                let location = report.locations.first();
+                let file = location
+                    .map(|location| location.path.as_str())
+                    .unwrap_or("");
+                let line = location.and_then(|location| location.line).map(i64::from);
+                let key = legacy_fingerprint(file, &report.title);
+
+                // The report is an immutable artifact; the event references it. Even a duplicate
+                // gets stored — that is the whole difference from the shell ledger, which counted
+                // it and threw it away.
+                let report_artifact = json!({
+                    "title": report.title,
+                    "severity": severity_str(report.severity),
+                    "file": file,
+                    "line": line,
+                    "body": report.body,
+                    "fix": report.fix,
+                    "confidence": report.confidence,
+                });
+                let report_id = self
+                    .cas
+                    .put_json(&report_artifact)
+                    .map_err(|e| StoreError::Conflict(e.to_string()))?;
+                let report_identity =
+                    (key.clone(), (*source).to_string(), round, report_id.clone());
+
+                if existing_reports.contains(&report_identity) {
+                    summary.dup += 1;
                     continue;
                 }
-                Err(reason) => {
-                    return Err(StoreError::Conflict(format!(
-                        "{source} finding {index} violates FindingReport@1: {reason}"
-                    )));
+                existing_reports.insert(report_identity);
+
+                let payload = json!({
+                    "key": key,
+                    "round": round,
+                    "source": source,
+                    "report_id": report_id,
+                });
+                let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
+                    .correlating(key.clone())
+                    .referencing(vec![report_id]);
+                apply_candidate(&mut projected, &event, self.cas)?;
+                events.push(event);
+
+                match projected
+                    .get(&key)
+                    .and_then(|f| f.history.last())
+                    .map(|t| t.kind)
+                {
+                    Some(TransitionKind::Reported) => summary.new += 1,
+                    Some(TransitionKind::Reopened) => summary.reopened += 1,
+                    Some(TransitionKind::Escalated) => summary.escalated += 1,
+                    // `AdoptedWhileDeclined` counts as a duplicate in the harness's tally, even
+                    // though it adopts the higher severity — the entry did not become actionable.
+                    Some(TransitionKind::Duplicate | TransitionKind::AdoptedWhileDeclined) => {
+                        summary.dup += 1
+                    }
+                    _ => {}
                 }
-            };
-            let location = report.locations.first();
-            let file = location
-                .map(|location| location.path.as_str())
-                .unwrap_or("");
-            let line = location.and_then(|location| location.line).map(i64::from);
-            let key = legacy_fingerprint(file, &report.title);
-
-            // The report is an immutable artifact; the event references it. Even a duplicate
-            // gets stored — that is the whole difference from the shell ledger, which counted
-            // it and threw it away.
-            let report_artifact = json!({
-                "title": report.title,
-                "severity": severity_str(report.severity),
-                "file": file,
-                "line": line,
-                "body": report.body,
-                "fix": report.fix,
-                "confidence": report.confidence,
-            });
-            let report_id = self
-                .cas
-                .put_json(&report_artifact)
-                .map_err(|e| StoreError::Conflict(e.to_string()))?;
-
-            if existing_reports.contains(&(
-                key.clone(),
-                source.to_string(),
-                round,
-                report_id.clone(),
-            )) {
-                summary.dup += 1;
-                continue;
             }
 
-            let payload = json!({
-                "key": key,
-                "round": round,
-                "source": source,
-                "report_id": report_id,
-            });
-            let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
-                .correlating(key.clone())
-                .referencing(vec![report_id]);
-            apply_candidate(&mut projected, &event, self.cas)?;
-            events.push(event);
-
-            match projected
-                .get(&key)
-                .and_then(|f| f.history.last())
-                .map(|t| t.kind)
-            {
-                Some(TransitionKind::Reported) => summary.new += 1,
-                Some(TransitionKind::Reopened) => summary.reopened += 1,
-                Some(TransitionKind::Escalated) => summary.escalated += 1,
-                // `AdoptedWhileDeclined` counts as a duplicate in the harness's tally, even
-                // though it adopts the higher severity — the entry did not become actionable.
-                Some(TransitionKind::Duplicate | TransitionKind::AdoptedWhileDeclined) => {
-                    summary.dup += 1
+            // Reviewer disputes are part of the contract the model is asked to answer — a
+            // `refute` on a prior claim's `claim_id` says "I think this is wrong". Fold it:
+            // an active claim a reviewer refutes becomes `contested`, which blocks convergence
+            // and flags the claim for human adjudication rather than leaving the dispute inert in
+            // raw CAS output. A `confirm` agrees with an open claim and needs no transition.
+            for dispute in &stage.disputes {
+                if dispute.position.trim() != "refute" {
+                    continue;
                 }
-                _ => {}
+                let key = dispute.fp.trim();
+                let contestable = matches!(
+                    projected.get(key).map(|f| f.status),
+                    Some(Status::Open | Status::Fixed)
+                );
+                if !contestable {
+                    continue;
+                }
+                let payload = json!({
+                    "key": key,
+                    "status": Status::Contested.as_str(),
+                    "note": format!("contested by {source}: {}", dispute.reason),
+                    "round": round,
+                });
+                let event =
+                    NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string());
+                apply_candidate(&mut projected, &event, self.cas)?;
+                events.push(event);
+                summary.contested += 1;
             }
-        }
-
-        // Reviewer disputes are part of the contract the model is asked to answer — a `refute`
-        // on a prior claim's `claim_id` says "I think this is wrong". Fold it: an active claim
-        // a reviewer refutes becomes `contested`, which blocks convergence and flags the claim
-        // for human adjudication rather than leaving the dispute inert in raw CAS output. A
-        // `confirm` agrees with a claim that is already open and needs no transition.
-        for dispute in &stage.disputes {
-            if dispute.position.trim() != "refute" {
-                continue;
-            }
-            let key = dispute.fp.trim();
-            let contestable = matches!(
-                projected.get(key).map(|f| f.status),
-                Some(Status::Open | Status::Fixed)
-            );
-            if !contestable {
-                continue;
-            }
-            let payload = json!({
-                "key": key,
-                "status": Status::Contested.as_str(),
-                "note": format!("contested by {source}: {}", dispute.reason),
-                "round": round,
-            });
-            let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string());
-            apply_candidate(&mut projected, &event, self.cas)?;
-            events.push(event);
-            summary.contested += 1;
         }
 
         summary.open = projected
@@ -299,6 +336,10 @@ impl<'a> Ingest<'a> {
             .iter()
             .filter(|f| f.status == Status::Open)
             .count();
+        let events: Vec<NewEvent> = events
+            .into_iter()
+            .map(|event| self.bind_round(event))
+            .collect();
         self.store.append_batch(&self.run_id, self.cas, &events)?;
         self.ledger = projected;
         Ok(summary)
@@ -311,17 +352,24 @@ impl<'a> Ingest<'a> {
         status: Status,
         note: Option<&str>,
     ) -> Result<(), StoreError> {
+        if self.ledger.get(key).is_none() {
+            return Err(StoreError::Conflict(format!(
+                "cannot resolve unknown finding key '{key}'"
+            )));
+        }
         let payload = json!({
             "key": key,
             "status": status.as_str(),
             "note": note,
             "round": self.ledger.round,
         });
-        let event = self.store.append(
-            &self.run_id,
-            self.cas,
-            NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string()),
-        )?;
+        let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string());
+        let event = if self.round_event_id.is_none() {
+            event.legacy_import()
+        } else {
+            event
+        };
+        let event = self.store.append(&self.run_id, self.cas, event)?;
         self.ledger.apply_event(&event, self.cas)?;
         Ok(())
     }
@@ -412,7 +460,9 @@ pub fn import_ledger_jsonl(
             "confidence": row.confidence,
             "imported": true,
         });
-        let event = NewEvent::new(EVENT_FINDING_REPORTED, payload).correlating(row.fp.clone());
+        let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
+            .correlating(row.fp.clone())
+            .legacy_import();
         apply_candidate(&mut projected, &event, cas)?;
         events.push(event);
 
@@ -431,7 +481,9 @@ pub fn import_ledger_jsonl(
                 "confidence": row.confidence,
                 "imported": true,
             });
-            let event = NewEvent::new(EVENT_FINDING_REPORTED, payload).correlating(row.fp.clone());
+            let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
+                .correlating(row.fp.clone())
+                .legacy_import();
             apply_candidate(&mut projected, &event, cas)?;
             events.push(event);
         }
@@ -444,7 +496,9 @@ pub fn import_ledger_jsonl(
                 "round": row.last_seen_round,
                 "imported": true,
             });
-            let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(row.fp.clone());
+            let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload)
+                .correlating(row.fp.clone())
+                .legacy_import();
             apply_candidate(&mut projected, &event, cas)?;
             events.push(event);
         }
@@ -452,7 +506,8 @@ pub fn import_ledger_jsonl(
     }
 
     if max_round > 1 {
-        let event = NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": max_round }));
+        let event =
+            NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": max_round })).legacy_import();
         apply_candidate(&mut projected, &event, cas)?;
         events.push(event);
     }

@@ -720,6 +720,7 @@ name = "review-attempt"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "sha2",
 ]
 
 [[package]]
@@ -857,6 +858,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

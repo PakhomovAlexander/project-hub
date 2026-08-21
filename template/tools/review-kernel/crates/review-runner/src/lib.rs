@@ -23,8 +23,9 @@ pub mod model;
 
 pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{
-    Grant, ModelRunner, RESULT_CONTRACT, RawCapture, ReviewerAdapter, ReviewerInputs,
-    ReviewerReturn, extract_result, parse_stage_output, unfence,
+    Grant, MAX_PRIOR_FINDINGS_BYTES, ModelRunner, RESULT_CONTRACT, RawCapture, ReviewerAdapter,
+    ReviewerInputArtifact, ReviewerInputs, ReviewerReturn, extract_result, parse_stage_output,
+    unfence,
 };
 
 use std::collections::BTreeMap;
@@ -71,6 +72,12 @@ impl ResolvedReviewer {
     /// after resolution; there is deliberately no path back to the filesystem.
     pub fn file(&self, path: &str) -> Option<&[u8]> {
         self.files.get(path).map(Vec::as_slice)
+    }
+
+    /// Every verified package file. Used to publish campaign authority without returning to
+    /// the package directory after resolution.
+    pub fn files(&self) -> &BTreeMap<String, Vec<u8>> {
+        &self.files
     }
 }
 
