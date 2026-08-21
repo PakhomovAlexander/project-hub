@@ -243,10 +243,16 @@ lockfile on every test run, so forgetting to re-lock fails CI, not a live review
 
 ### `reviewctl` flags
 
-`reviewctl tui` opens the interactive configuration-proposal and run surface. It discovers the
+`reviewctl tui` opens the interactive configuration-proposal and run surface with `PIPELINES` and
+`REVIEWERS` tabs. The pipeline tab renders the validated DAG as topological levels, shows the
+selected node's incoming and outgoing edges with visible truncation markers, and edits budgets,
+convergence, reviewer package bindings, and reviewer membership. Adding a reviewer clones the
+wiring of the first package-backed reviewer and names that template in the status line; pipelines
+whose reviewers use different wiring must be edited in TOML. Infrastructure nodes and arbitrary
+port contracts remain TOML-owned rather than being guessed by the interface. The reviewer tab discovers the
 packaged reviewers already selected by `--pipeline` and can draft model/effort changes without
-mutating the repository. Press `s` to export an explicit patch under the run state's
-`config-proposals/` directory. Apply and review that patch, commit it, then start a new Campaign
+mutating the repository. Press `s` to export one explicit pipeline/reviewer patch under run state
+in the `config-proposals/` directory. Apply and review that patch, commit it, then start a new Campaign
 whose `--authority` names that commit by relaunching the TUI. The in-memory draft remains marked
 pending after export because an exported file is not execution authority. A resumed Campaign keeps
 its original reviewer authority and ignores a newly supplied `--authority`.
@@ -255,16 +261,19 @@ Alternatively, keep the TUI open while applying and committing the patch, press 
 now-authoritative worktree configuration, then select a new Campaign name and the committed
 authority before pressing `r`. Reload refuses package or lock bytes that are still inconsistent.
 
-Backend and graph topology remain package/pipeline-owned and are read-only in the TUI. Press `r`
+The runner backend is package-owned and read-only; infrastructure nodes and arbitrary port
+contracts stay TOML-owned. Reviewer membership and package bindings are editable by cloning the
+validated wiring of an existing package-backed reviewer. Press `r`
 only when no configuration proposal is pending; it launches the ordinary `reviewctl run` path and
 therefore uses the Campaign's pinned authority, never in-memory or working-tree reviewer settings.
 The alternate screen is suspended while checks and reviewers execute and restored for Pass,
 Fail, and Incomplete verdicts.
 
-The TUI uses Vim-style navigation: `j`/`k`, `g`/`G`, and `Ctrl-U`/`Ctrl-D` move; `h`/`l` or
-`Tab` switch panes; `Enter` edits or toggles the selected value; `s` exports a configuration
-patch; `R` reloads applied configuration; `r` runs pinned authority; `Esc` cancels an edit; and
-`q` quits. Proposal export refuses
+The TUI uses Vim-style navigation: `j`/`k`, `g`/`G`, and `Ctrl-U`/`Ctrl-D` move; `h`/`l` switch
+panes; `Tab`/`Shift-Tab` or `H`/`L` switch top-level tabs; and `Enter` edits the selected value.
+In `PIPELINES`, `a` adds a package-backed reviewer and `d` twice removes one. `s` exports a
+configuration patch; `R` reloads applied configuration; `r` runs pinned authority; `Esc` cancels
+an edit; and `q` quits. Proposal export refuses
 package or lock bytes changed by another process while the interface was open. Proposal state may
 be outside the repository or below `.review/runs/`; paths that could alias captured reviewer,
 pipeline, or lock content are refused.
@@ -272,6 +281,7 @@ pipeline, or lock content are refused.
 | Flag | Meaning |
 |---|---|
 | `--campaign NAME` | Join a persistent ledger; the same name continues the pinned Campaign. Without it, `local` is the Campaign name. |
+| `--state DIR` | Store run state at `DIR`; relative paths resolve from the process working directory. Repository-contained state is allowed only below the selected review tree's `runs/` directory. |
 | `--authority REV` | Required when opening a Campaign. Resolves the trusted Snapshot that supplies pipeline, lock, reviewer packages, and policy; never re-resolved on continuation. For `diff`, this Snapshot is also the Campaign's immutable Base, so use the integration branch or merge base such as `origin/main`, not `HEAD`. |
 | `--uncommitted` | Capture tracked and untracked-not-ignored worktree content behind a monitored two-pass boundary, then build an isolated synthetic Git head without writing candidate objects. Changed gitlinks and unsafe parent symlinks fail closed. |
 | `--restart-round` | Explicitly supersede an incomplete Round's immutable Subject and input sets with a newly captured head under the next epoch. |
