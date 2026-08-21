@@ -7,7 +7,7 @@
 version = 2
 
 [subject]
-kind = "whole-tree"
+kind = "diff"
 
 # ---------------------------------------------------------------- gate checks
 # Programs and options are trusted literals. A value derived from the change under review must be
@@ -38,7 +38,10 @@ outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinali
 [[nodes]]
 id = "generation"
 kind = "generation"
-outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [
+  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
 
 [[nodes]]
 id = "architecture"
@@ -46,6 +49,7 @@ kind = "reviewer"
 inputs = [
   { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
   { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
 outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
@@ -57,6 +61,7 @@ kind = "reviewer"
 inputs = [
   { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
   { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
 outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
@@ -83,8 +88,16 @@ from = { node = "generation", port = "findings" }
 to = { node = "architecture", port = "prior_findings" }
 
 [[edges]]
+from = { node = "generation", port = "change_set" }
+to = { node = "architecture", port = "change_set" }
+
+[[edges]]
 from = { node = "generation", port = "findings" }
 to = { node = "performance", port = "prior_findings" }
+
+[[edges]]
+from = { node = "generation", port = "change_set" }
+to = { node = "performance", port = "change_set" }
 
 [[edges]]
 from = { node = "gate", port = "decision" }
