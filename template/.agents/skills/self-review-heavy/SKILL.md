@@ -1,6 +1,6 @@
 ---
 name: self-review-heavy
-description: Heavy self-review for substantial changes, driven by the Review Kernel — reviewctl runs a sandboxed, budgeted reviewer pipeline against committed HEAD; you work the findings ledger, resolve with evidence, and re-run to convergence. Expensive by design; use before opening or updating a PR for engine-grade work.
+description: Heavy self-review for substantial changes, driven by the Review Kernel; reviewctl runs a sandboxed, budgeted reviewer pipeline against committed HEAD or an explicitly requested revalidated worktree, and you work the findings ledger to convergence.
 argument-hint: "[campaign-name] [focus: free text] [overrides: pipeline=FILE repo=DIR]"
 compatibility: Requires git and the review kernel workspace (tools/review-kernel in the hub, pinned Rust toolchain), a .review/ pipeline in the target repo, and authenticated claude/codex CLIs for model reviewers.
 metadata:
@@ -27,9 +27,9 @@ for those, say so and suggest a plain review.
 - **The kernel binary.** Build once per session:
   `cargo build --release -p reviewctl --manifest-path <hub>/tools/review-kernel/Cargo.toml`
   → `<hub>/tools/review-kernel/target/release/reviewctl` (`reviewctl` below).
-- **A committed HEAD.** A run reviews committed content only; uncommitted work is
-  invisible. If the target repo is dirty, stop and ask — never review a state the author
-  did not intend, and never commit their work for them just to review it.
+- **An intentional Subject.** The default reviews committed `HEAD`. Use `--uncommitted` only
+  when the owner explicitly wants tracked and untracked-not-ignored worktree content captured
+  behind the monitored synthetic-head boundary; never infer that choice from a dirty checkout.
 - **A `.review/` in the target repo** (pipeline TOML, reviewer packages, lockfile — the
   hub's own is the model). If the repo has none, offer to onboard it first; do not
   improvise a pipeline inline.
@@ -46,11 +46,13 @@ fresh campaign to escape an inconvenient ledger.
 ## 2 · Run a round
 
 ```
-reviewctl run --campaign <name> --authority <trusted-rev> [--restart-round] [--focus "<campaign focus>"]
+reviewctl run --campaign <name> --authority <trusted-rev> [--uncommitted] [--restart-round] [--focus "<campaign focus>"]
 ```
 
-`--authority` is required only when the Campaign opens. Continuations reuse the stored Campaign
-Manifest and do not resolve that ref again. The kernel then captures HEAD, runs the gate checks in a read-only sandbox, dispatches the
+`--authority` is required only when the Campaign opens. In a diff pipeline it is also the pinned
+Base, so use an integration branch or merge base, not `HEAD`. Continuations reuse the stored
+Campaign Manifest and do not resolve that ref again. The kernel then captures the selected head,
+runs the gate checks in a read-only sandbox, dispatches the
 reviewers concurrently under the pipeline's budgets, reduces their reports into the
 ledger, and prints every node outcome, the findings, the spend, and the verdict. From
 round 2 on, every reviewer receives the campaign's prior findings as labelled data and is
