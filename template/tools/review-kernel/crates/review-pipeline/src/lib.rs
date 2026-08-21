@@ -34,14 +34,16 @@ use review_core::event::{
     AttemptFencedPayloadV1, AttemptReleasedPayloadV1,
 };
 use review_core::{
-    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
-    NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1, RunFailureReasonV2,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
-    SnapshotAffinity, SourceSnapshot, SubjectV1, run_report_closes_round,
+    CampaignOpenedPayloadV1, ChangeSetV1, EventType, LegacyStageOutput, MissingNodeV2,
+    NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1, RoundStartedPayloadV1,
+    RunFailureReasonV2, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2,
+    RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity, SourceSnapshot, SubjectV1,
+    run_report_closes_round,
 };
 use review_graph::{ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, PortContract, RunReport};
 use review_runner::{
-    MAX_PRIOR_FINDINGS_BYTES, ReviewerAdapter, ReviewerInputArtifact, ReviewerInputs, RunnerError,
+    MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, ReviewerAdapter, ReviewerInputArtifact,
+    ReviewerInputs, RunnerError,
 };
 use review_sandbox::{Mode, Sandbox};
 use review_source_git::Manifest;
@@ -128,6 +130,8 @@ pub struct RoundAuthority {
     head_snapshot_id: String,
     head_content_digest: String,
     prior_finding_set_id: String,
+    subject_kind: review_core::SubjectKind,
+    change_set_id: Option<String>,
 }
 
 impl RoundAuthority {
@@ -163,6 +167,21 @@ impl RoundAuthority {
         )
         .map_err(|error| error.to_string())?;
         subject.validate()?;
+        let change_set_id = subject.change_set_id.clone();
+        if let Some(change_set_id) = &change_set_id {
+            let change_set: ChangeSetV1 = serde_json::from_value(
+                cas.get_json(change_set_id)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            change_set.validate()?;
+            if change_set.base_snapshot_id
+                != subject.base_snapshot_id.as_deref().unwrap_or_default()
+                || change_set.head_snapshot_id != subject.head_snapshot_id
+            {
+                return Err("Round Change Set does not match its Subject".into());
+            }
+        }
         let source: SourceSnapshot = serde_json::from_value(
             cas.get_json(&subject.head_snapshot_id)
                 .map_err(|error| error.to_string())?,
@@ -180,17 +199,19 @@ impl RoundAuthority {
         if source_manifest.content_digest() != source.content_digest {
             return Err("Round Subject manifest contradicts its SourceSnapshot".into());
         }
-        let required = [
-            &opened.authority_snapshot_id,
-            &opened.campaign_manifest_id,
-            &payload.subject_id,
-            &subject.head_snapshot_id,
-            &payload.prior_finding_set_id,
-            &payload.prior_demand_set_id,
+        let mut required = vec![
+            opened.authority_snapshot_id.clone(),
+            opened.campaign_manifest_id.clone(),
+            payload.subject_id.clone(),
+            subject.head_snapshot_id.clone(),
+            payload.prior_finding_set_id.clone(),
+            payload.prior_demand_set_id.clone(),
         ];
+        required.extend(subject.base_snapshot_id.clone());
+        required.extend(change_set_id.clone());
         for artifact in required {
-            cas.get(artifact).map_err(|error| error.to_string())?;
-            if !round.artifact_refs.contains(artifact) {
+            cas.get(&artifact).map_err(|error| error.to_string())?;
+            if !round.artifact_refs.contains(&artifact) {
                 return Err(format!(
                     "RoundStarted@1 does not publish required authority artifact `{artifact}`"
                 ));
@@ -206,16 +227,19 @@ impl RoundAuthority {
             head_snapshot_id: subject.head_snapshot_id,
             head_content_digest: source.content_digest,
             prior_finding_set_id: payload.prior_finding_set_id,
+            subject_kind: subject.kind,
+            change_set_id,
         })
     }
 
-    fn artifact_refs(&self) -> [String; 4] {
-        [
+    fn artifact_refs(&self) -> Vec<String> {
+        let refs = vec![
             self.authority_snapshot_id.clone(),
             self.campaign_manifest_id.clone(),
             self.subject_id.clone(),
             self.head_snapshot_id.clone(),
-        ]
+        ];
+        refs
     }
 }
 
@@ -575,6 +599,9 @@ impl<'a> Kernel<'a> {
         if snapshot.content_digest() != authority.head_content_digest {
             return Err("executed manifest does not match the Round Subject Snapshot".into());
         }
+        if subject != authority.subject_kind {
+            return Err("pipeline Subject kind disagrees with Round authority".into());
+        }
         let replayed = replay_execution(store, cas, &run_id, &authority)?;
         if !replayed.outstanding_attempts.is_empty() {
             let events: Vec<NewEvent> = replayed
@@ -641,15 +668,7 @@ impl<'a> Kernel<'a> {
         subject: review_core::SubjectKind,
         authority: RoundAuthority,
     ) -> Result<Kernel<'a>, String> {
-        match subject {
-            review_core::SubjectKind::WholeTree => {
-                Kernel::new(cas, store, run_id, snapshot, subject, authority)
-            }
-            review_core::SubjectKind::Diff => Err(
-                "review-pipeline cannot execute a `diff` Subject until its pinned Base and Change Set are available"
-                    .to_string(),
-            ),
-        }
+        Kernel::new(cas, store, run_id, snapshot, subject, authority)
     }
 
     /// Compose execution from the exact validated pipeline definition.
@@ -1053,12 +1072,29 @@ impl<'a> Kernel<'a> {
     /// reviewer receives on its `prior_findings` input edge. In the first round there is no
     /// prior state, so an empty finding set is emitted; the edge is satisfied either way, and
     /// nothing about delivery depends on ambient kernel state.
-    fn run_generation(&self) -> Result<Vec<String>, String> {
+    fn run_generation(&self, node: &Node) -> Result<ArtifactMap, String> {
         let artifact = self
             .prior_findings
             .clone()
             .ok_or("campaign execution has no exact prior Finding Set from RoundStarted@1")?;
-        Ok(vec![artifact])
+        let mut outputs = ArtifactMap::new();
+        for port in &node.outputs {
+            let value = match port.name.as_str() {
+                "findings" => artifact.clone(),
+                "change_set" => self
+                    .authority
+                    .change_set_id
+                    .clone()
+                    .ok_or("generation declares `change_set` for a whole-tree Subject")?,
+                other => {
+                    return Err(format!(
+                        "generation has unsupported built-in output port `{other}`"
+                    ));
+                }
+            };
+            outputs.insert(port.name.clone(), vec![value]);
+        }
+        Ok(outputs)
     }
 
     fn run_gate(&self, node_id: &str) -> Result<Vec<String>, String> {
@@ -1140,9 +1176,14 @@ impl<'a> Kernel<'a> {
             let mut resolved = Vec::with_capacity(artifacts.len());
             for artifact in artifacts {
                 let encoded = self.cas.get(artifact).map_err(|error| error.to_string())?;
-                if encoded.len() > MAX_PRIOR_FINDINGS_BYTES {
+                let limit = if port == "change_set" {
+                    MAX_CHANGE_SET_BYTES
+                } else {
+                    MAX_PRIOR_FINDINGS_BYTES
+                };
+                if encoded.len() > limit {
                     return Err(format!(
-                        "reviewer input port '{port}' artifact {artifact} exceeds {MAX_PRIOR_FINDINGS_BYTES} bytes"
+                        "reviewer input port '{port}' artifact {artifact} exceeds {limit} bytes"
                     ));
                 }
                 let value = serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
@@ -1644,6 +1685,27 @@ fn mutation_summary(
     })
 }
 
+fn validate_generation_outputs(
+    authority: &RoundAuthority,
+    node: &Node,
+    outputs: &ArtifactMap,
+) -> Result<(), String> {
+    if node.kind != NodeKind::Generation {
+        return Ok(());
+    }
+    let expected_findings = vec![authority.prior_finding_set_id.clone()];
+    let expected_change_set = authority.change_set_id.as_ref().map(|id| vec![id.clone()]);
+    if outputs.get("findings") != Some(&expected_findings)
+        || outputs.get("change_set") != expected_change_set.as_ref()
+    {
+        return Err(format!(
+            "generation receipt contradicts Round {}'s pinned inputs or Change Set",
+            authority.round
+        ));
+    }
+    Ok(())
+}
+
 impl Dispatch for Kernel<'_> {
     fn record_invocation(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
         let payload = NodeInvocationPayloadV1 {
@@ -1718,6 +1780,7 @@ impl Dispatch for Kernel<'_> {
                 .iter()
                 .map(|port| (port.port.clone(), port.artifact_ids.clone()))
                 .collect();
+            validate_generation_outputs(&self.authority, node, &outputs)?;
             let expected =
                 port_artifacts(&node.outputs, &outputs, &self.authority.head_snapshot_id);
             if receipt.node != node.id || receipt.outputs != expected {
@@ -1730,8 +1793,11 @@ impl Dispatch for Kernel<'_> {
         }
         // Routing is on the validated kind, never the id: an id is a name someone chose, and a
         // reviewer named `gather` must still be a reviewer that runs.
+        if node.kind == NodeKind::Generation {
+            return self.run_generation(node);
+        }
         let artifacts = match node.kind {
-            NodeKind::Generation => self.run_generation(),
+            NodeKind::Generation => unreachable!("generation returned above"),
             NodeKind::Gate => self.run_gate(&node.id),
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
             // labels are the reviewer's concern, not theirs.
@@ -1743,6 +1809,7 @@ impl Dispatch for Kernel<'_> {
     }
 
     fn record_outputs(&self, node: &Node, outputs: &ArtifactMap) -> Result<(), String> {
+        validate_generation_outputs(&self.authority, node, outputs)?;
         if let Some(recorded) = self.replayed_outputs.get(&node.id) {
             let expected = NodeOutputReceiptPayloadV1 {
                 node: node.id.clone(),

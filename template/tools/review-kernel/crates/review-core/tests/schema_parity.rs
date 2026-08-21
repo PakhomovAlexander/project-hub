@@ -8,20 +8,21 @@ use std::path::PathBuf;
 
 use review_core::{
     ArtifactEnvelope, AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, ClaimRef, ClaimRefKind, EventType, FindingReport, Location,
-    MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
-    PortArtifactsV1, PortCardinality, Producer, ReviewerPackageV1, RunEvent, RunFailureReasonV2,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunSuppressionReasonV2, RunVerdictV2,
-    SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    CampaignOpenedPayloadV1, ChangeSetV1, ClaimRef, ClaimRefKind, EventType, FindingReport,
+    Location, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PatchProposal,
+    PathRenameV1, PortArtifactsV1, PortCardinality, Producer, ReviewerPackageV1, RunEvent,
+    RunFailureReasonV2, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2,
+    RunSuppressionReasonV2, RunVerdictV2, SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 14] = [
+const SCHEMAS: [&str; 15] = [
     "artifact-envelope-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
+    "change-set-v1.json",
     "finding-report-v1.json",
     "node-invocation-v1.json",
     "node-output-receipt-v1.json",
@@ -161,13 +162,15 @@ fn source_snapshot_roundtrips_every_capture_kind() {
     ];
 
     for capture in captures {
+        let source_revision =
+            matches!(&capture, Capture::Committed { .. }).then(|| "bba24cb".to_string());
         let snapshot = SourceSnapshot {
             repository_id: "example-org/project-hub".into(),
             vcs: Vcs::Git,
             capture,
             content_digest: digest.clone(),
             parent_snapshot_id: None,
-            source_revision: Some("bba24cb".into()),
+            source_revision,
             artifact_manifest: Some(digest.clone()),
             submodules: vec![Submodule {
                 path: "contrib/x".into(),
@@ -182,6 +185,23 @@ fn source_snapshot_roundtrips_every_capture_kind() {
             snapshot
         );
     }
+
+    let synthetic_with_revision = json!({
+        "repository_id": "r",
+        "vcs": "git",
+        "capture": {
+            "kind": "synthetic_worktree",
+            "tree_id": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+            "boundary": "revalidated"
+        },
+        "content_digest": digest,
+        "source_revision": "HEAD"
+    });
+    assert_invalid(
+        "source-snapshot-v1.json",
+        &synthetic_with_revision,
+        "synthetic content cannot claim a committed source revision",
+    );
 }
 
 #[test]
@@ -252,6 +272,52 @@ fn subject_and_campaign_authority_roundtrip() {
         serde_json::from_value::<CampaignManifestV1>(value).unwrap(),
         manifest
     );
+}
+
+#[test]
+fn change_set_roundtrips_with_exact_patch_bytes() {
+    let base = format!("sha256:{}", "a".repeat(64));
+    let head = format!("sha256:{}", "b".repeat(64));
+    let change_set = ChangeSetV1::new(
+        base,
+        head,
+        vec!["src/new.rs".into(), "src/old.rs".into()],
+        vec![PathRenameV1 {
+            old_path: "src/old.rs".into(),
+            new_path: "src/new.rs".into(),
+            similarity: 100,
+        }],
+        b"diff --git a/src/old.rs b/src/new.rs\n\0\xff",
+        "git version test",
+        "review.kernel/git-tree-diff@test",
+    )
+    .unwrap();
+    change_set.validate().unwrap();
+    assert_eq!(
+        change_set.canonical_patch().unwrap(),
+        b"diff --git a/src/old.rs b/src/new.rs\n\0\xff"
+    );
+    let value = serde_json::to_value(&change_set).unwrap();
+    assert_valid("change-set-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<ChangeSetV1>(value).unwrap(),
+        change_set
+    );
+}
+
+#[test]
+fn change_set_semantic_conformance_corpus_matches_the_permanent_reader() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../schemas/change-set-v1-conformance.json");
+    let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    for case in corpus["valid"].as_array().unwrap() {
+        let value: ChangeSetV1 = serde_json::from_value(case["payload"].clone()).unwrap();
+        assert!(value.validate().is_ok(), "{}", case["name"]);
+    }
+    for case in corpus["invalid"].as_array().unwrap() {
+        let value: ChangeSetV1 = serde_json::from_value(case["payload"].clone()).unwrap();
+        assert!(value.validate().is_err(), "{}", case["name"]);
+    }
 }
 
 #[test]

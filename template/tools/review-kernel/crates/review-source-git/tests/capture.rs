@@ -119,6 +119,19 @@ impl CaptureObserver for MutateEveryPass<'_> {
     }
 }
 
+struct MutateAndRestoreEveryPass<'a> {
+    fixture: &'a Fixture,
+}
+
+impl CaptureObserver for MutateAndRestoreEveryPass<'_> {
+    fn between_passes(&self, _attempt: u32) {
+        self.fixture
+            .write("src/main.rs", b"fn main() { /* transient edit */ }\n");
+        self.fixture
+            .write("src/main.rs", b"fn main() { println!(\"hi\"); }\n");
+    }
+}
+
 /// A worktree that keeps changing must fail closed rather than admit a tree that never existed.
 #[test]
 fn a_worktree_changing_under_the_read_fails_closed() {
@@ -137,6 +150,40 @@ fn a_worktree_changing_under_the_read_fails_closed() {
         matches!(err, CaptureError::Unstable { attempts: 3 }),
         "expected a refused capture, got {err}"
     );
+}
+
+#[test]
+fn matching_manifests_do_not_hide_an_intervening_change_event() {
+    let fixture = Fixture::new();
+    fixture.with_content();
+    fixture.commit_all("initial");
+
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let error = Capture::new(&repo, &cas)
+        .dirty_observed(&MutateAndRestoreEveryPass { fixture: &fixture })
+        .unwrap_err();
+
+    assert!(matches!(error, CaptureError::Unstable { attempts: 3 }));
+}
+
+#[cfg(unix)]
+#[test]
+fn dirty_capture_refuses_a_symlink_in_a_tracked_paths_parent() {
+    let fixture = Fixture::new();
+    fixture.write("dir/token", b"repository bytes\n");
+    fixture.commit_all("tracked nested path");
+    std::fs::remove_dir_all(fixture.repo_path().join("dir")).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("token"), b"host secret\n").unwrap();
+    std::os::unix::fs::symlink(outside.path(), fixture.repo_path().join("dir")).unwrap();
+
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    assert!(matches!(
+        Capture::new(&repo, &cas).dirty(),
+        Err(CaptureError::UnsafePath { .. })
+    ));
 }
 
 struct MutateOnce<'a> {
@@ -268,10 +315,16 @@ fn the_snapshot_payload_matches_source_snapshot_v1() {
     }
     let parsed: review_core::SourceSnapshot = serde_json::from_value(payload).unwrap();
     assert!(!parsed.is_derived());
-    assert!(
-        capture.dirty().unwrap().to_payload(None).is_err(),
-        "a dirty manifest must not be mislabeled with HEAD's committed tree id"
-    );
+    let mut dirty = capture.dirty().unwrap();
+    assert!(dirty.to_payload(None).is_err());
+    dirty.tree_id = Some(repo.synthetic_tree(&dirty.manifest, &cas).unwrap());
+    let payload = dirty.to_payload(None).unwrap();
+    assert!(validator.is_valid(&payload));
+    let parsed: review_core::SourceSnapshot = serde_json::from_value(payload).unwrap();
+    assert!(matches!(
+        parsed.capture,
+        review_core::snapshot::Capture::SyntheticWorktree { .. }
+    ));
 }
 
 #[test]
@@ -302,6 +355,49 @@ fn a_persisted_committed_tree_is_rehydrated_only_when_all_authority_agrees() {
             .rehydrate_committed(&source, &snapshot.manifest)
             .is_err()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_symlink_targets_roundtrip_through_both_capture_modes() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let fixture = Fixture::new();
+    let target = std::ffi::OsStr::from_bytes(b"target-\xff");
+    std::os::unix::fs::symlink(target, fixture.repo_path().join("link")).unwrap();
+    fixture.commit_all("non-utf8 symlink");
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let capture = Capture::new(&repo, &cas);
+    let committed = capture.committed("HEAD").unwrap();
+    let dirty = capture.dirty().unwrap();
+
+    assert_eq!(committed.content_digest, dirty.content_digest);
+    let root = fixture.dir.path().join("materialized");
+    review_source_git::materialize(&dirty.manifest, &cas, &root).unwrap();
+    assert_eq!(
+        std::fs::read_link(root.join("link"))
+            .unwrap()
+            .as_os_str()
+            .as_bytes(),
+        b"target-\xff"
+    );
+}
+
+#[test]
+fn dirty_capture_fails_closed_when_the_index_contains_a_gitlink() {
+    let fixture = Fixture::new();
+    fixture.write("tracked.txt", b"content\n");
+    let revision = fixture.commit_all("base");
+    let cacheinfo = format!("160000,{revision},submodule");
+    fixture.git(&["update-index", "--add", "--cacheinfo", &cacheinfo]);
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+
+    assert!(matches!(
+        Capture::new(&repo, &cas).dirty(),
+        Err(review_source_git::CaptureError::UnsupportedSubmodules { .. })
+    ));
 }
 
 #[test]

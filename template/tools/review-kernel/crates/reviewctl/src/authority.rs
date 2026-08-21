@@ -8,12 +8,12 @@ use review_config::Definition;
 use review_config::lock::{Lockfile, Registry};
 use review_core::{
     AuthorityFileV1, CampaignBudgetV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, CampaignReviewerV1, EventType, ReviewerPackageV1,
+    CampaignOpenedPayloadV1, CampaignReviewerV1, ChangeSetV1, EventType, ReviewerPackageV1,
     RoundInputSupersededPayloadV1, RoundStartedPayloadV1, SourceSnapshot, SubjectKind, SubjectV1,
     run_report_closes_round,
 };
 use review_pipeline::RoundAuthority;
-use review_runner::MAX_PRIOR_FINDINGS_BYTES;
+use review_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 use review_source_git::{Capture, EntryKind, Manifest, Repo, Snapshot};
 use review_store::{Cas, EventStore, Ingest, Ledger, NewEvent, Status};
 
@@ -60,14 +60,6 @@ pub(super) fn prepare(
     } else {
         resume(options, cas, &events, &pipeline_path)?
     };
-
-    if campaign.loaded.subject_kind() == SubjectKind::Diff {
-        return Err(
-            "this kernel pinned the diff Campaign's Authority Snapshot and Base, but refuses \
-             to execute until the typed Change Set is available; complete M2.3-M2.4"
-                .to_string(),
-        );
-    }
 
     let round = prepare_round(options, cas, store, repo, &run_id, &campaign)?;
     let authority = RoundAuthority::load(store, cas, &run_id, &round.event_id)?;
@@ -502,7 +494,7 @@ fn prepare_round(
             .map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    let repository_id = authority_snapshot.repository_id;
+    let repository_id = authority_snapshot.repository_id.clone();
     let events = store.replay(run_id).map_err(|error| error.to_string())?;
     let mut closed_rounds = 0_u32;
     for event in &events {
@@ -535,13 +527,16 @@ fn prepare_round(
             return Err("--restart-round requires an incomplete Round to supersede".into());
         }
         (existing, _restart) => capture_round(
+            options,
             cas,
             store,
             repo,
             run_id,
             campaign,
-            target_round,
-            existing.as_ref().map(|(event, payload)| (*event, payload)),
+            RoundCaptureRequest {
+                round: target_round,
+                superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
+            },
         )?,
     };
 
@@ -563,15 +558,21 @@ fn prepare_round(
     Ok(round)
 }
 
+struct RoundCaptureRequest<'a> {
+    round: u32,
+    superseded: Option<(&'a review_core::RunEvent, &'a RoundStartedPayloadV1)>,
+}
+
 fn capture_round(
+    options: &Options,
     cas: &Cas,
     store: &mut EventStore,
     repo: &Repo,
     run_id: &str,
     campaign: &OpenCampaign,
-    round: u32,
-    superseded: Option<(&review_core::RunEvent, &RoundStartedPayloadV1)>,
+    request: RoundCaptureRequest<'_>,
 ) -> Result<RoundInput, String> {
+    let RoundCaptureRequest { round, superseded } = request;
     let dispatched_attempts: Vec<(String, String, Option<u64>)> = if let Some((old_event, _)) =
         superseded
     {
@@ -620,9 +621,16 @@ fn capture_round(
     } else {
         Vec::new()
     };
-    let snapshot = Capture::new(repo, cas)
-        .committed("HEAD")
-        .map_err(|error| format!("capturing HEAD: {error}"))?;
+    let capture = Capture::new(repo, cas);
+    let mut snapshot = if options.uncommitted {
+        capture
+            .dirty()
+            .map_err(|error| format!("capturing revalidated worktree: {error}"))?
+    } else {
+        capture
+            .committed("HEAD")
+            .map_err(|error| format!("capturing HEAD: {error}"))?
+    };
     let authority_snapshot: SourceSnapshot = serde_json::from_value(
         cas.get_json(&campaign.manifest.authority_snapshot_id)
             .map_err(|error| error.to_string())?,
@@ -633,7 +641,93 @@ fn capture_round(
             "candidate HEAD belongs to a different repository than the Campaign authority".into(),
         );
     }
+    if campaign.loaded.subject_kind() == SubjectKind::Diff
+        && snapshot.submodules != authority_snapshot.submodules
+    {
+        let mut paths: Vec<String> = snapshot
+            .submodules
+            .iter()
+            .chain(&authority_snapshot.submodules)
+            .map(|submodule| submodule.path.clone())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        return Err(format!(
+            "diff capture refuses changed gitlinks until submodule sandbox policy is explicit: {}",
+            paths.join(", ")
+        ));
+    }
+    let tree_diff = if campaign.loaded.subject_kind() == SubjectKind::Diff {
+        let base_manifest_id = authority_snapshot
+            .artifact_manifest
+            .as_deref()
+            .ok_or("Campaign Base Snapshot has no artifact manifest")?;
+        let base_manifest: Manifest = serde_json::from_value(
+            cas.get_json(base_manifest_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let base_tree = capture
+            .rehydrate_committed(&authority_snapshot, &base_manifest)
+            .map_err(|error| format!("rehydrating pinned Base: {error}"))?;
+        if snapshot.dirty {
+            let (head_tree, diff) = repo
+                .tree_diff_synthetic_head(&base_tree, &snapshot.manifest, cas)
+                .map_err(|error| error.to_string())?;
+            snapshot.tree_id = Some(head_tree);
+            Some(diff)
+        } else {
+            Some(
+                repo.tree_diff(
+                    &base_tree,
+                    snapshot
+                        .tree_id
+                        .as_ref()
+                        .ok_or("committed head has no tree authority")?,
+                )
+                .map_err(|error| error.to_string())?,
+            )
+        }
+    } else {
+        if snapshot.dirty {
+            snapshot.tree_id = Some(
+                repo.synthetic_tree(&snapshot.manifest, cas)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        None
+    };
     let (head_snapshot_id, manifest_id) = publish_snapshot(&snapshot, cas)?;
+    let change_set_id = match tree_diff {
+        Some(diff) => {
+            let base_snapshot_id = campaign
+                .manifest
+                .base_snapshot_id
+                .as_deref()
+                .ok_or("diff Campaign has no pinned Base Snapshot")?;
+            let change_set = diff.change_set(base_snapshot_id, &head_snapshot_id)?;
+            let encoded = serde_json::to_vec(&change_set).map_err(|error| error.to_string())?;
+            if encoded.len() > MAX_CHANGE_SET_BYTES {
+                return Err(format!(
+                    "exact Change Set is {} bytes; maximum is {} bytes and partitioning is required",
+                    encoded.len(),
+                    MAX_CHANGE_SET_BYTES
+                ));
+            }
+            Some(
+                cas.put_json(&serde_json::to_value(change_set).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?,
+            )
+        }
+        None => None,
+    };
+    let mut source_refs = vec![
+        campaign.manifest.authority_snapshot_id.clone(),
+        campaign.manifest_id.clone(),
+        head_snapshot_id.clone(),
+        manifest_id.clone(),
+    ];
+    source_refs.extend(change_set_id.clone());
     store
         .append(
             run_id,
@@ -646,18 +740,26 @@ fn capture_round(
             )
             .caused_by(campaign.opened_event_id.clone())
             .correlating(head_snapshot_id.clone())
-            .referencing(vec![
-                campaign.manifest.authority_snapshot_id.clone(),
-                campaign.manifest_id.clone(),
-                head_snapshot_id.clone(),
-                manifest_id,
-            ]),
+            .referencing(source_refs),
         )
         .map_err(|error| error.to_string())?;
-    let subject = SubjectV1::whole_tree(&head_snapshot_id);
+    let subject = match campaign.loaded.subject_kind() {
+        SubjectKind::WholeTree => SubjectV1::whole_tree(&head_snapshot_id),
+        SubjectKind::Diff => SubjectV1::diff(
+            &head_snapshot_id,
+            campaign
+                .manifest
+                .base_snapshot_id
+                .as_deref()
+                .ok_or("diff Campaign has no pinned Base Snapshot")?,
+            change_set_id
+                .as_deref()
+                .ok_or("diff Campaign produced no Change Set")?,
+        ),
+    };
     subject.validate()?;
     let subject_id = cas
-        .put_json(&serde_json::to_value(subject).map_err(|error| error.to_string())?)
+        .put_json(&serde_json::to_value(&subject).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
 
     let (prior_findings, demands) = if let Some((_, old)) = superseded {
@@ -716,6 +818,16 @@ fn capture_round(
             replacement_subject_id: payload.subject_id.clone(),
         };
         superseded.validate()?;
+        let mut replacement_refs = vec![
+            campaign.manifest.authority_snapshot_id.clone(),
+            campaign.manifest_id.clone(),
+            old.subject_id.clone(),
+            payload.subject_id.clone(),
+            payload.prior_finding_set_id.clone(),
+            payload.prior_demand_set_id.clone(),
+        ];
+        replacement_refs.extend(subject.base_snapshot_id.clone());
+        replacement_refs.extend(subject.change_set_id.clone());
         let mut batch = vec![
             NewEvent::new(
                 EventType::RoundInputSupersededV1,
@@ -723,14 +835,7 @@ fn capture_round(
             )
             .caused_by(old_event.event_id.clone())
             .correlating(payload.subject_id.clone())
-            .referencing(vec![
-                campaign.manifest.authority_snapshot_id.clone(),
-                campaign.manifest_id.clone(),
-                old.subject_id.clone(),
-                payload.subject_id.clone(),
-                payload.prior_finding_set_id.clone(),
-                payload.prior_demand_set_id.clone(),
-            ]),
+            .referencing(replacement_refs),
         ];
         batch.extend(
             dispatched_attempts
@@ -748,6 +853,16 @@ fn capture_round(
                     .caused_by(old_event.event_id.clone())
                 }),
         );
+        let mut round_refs = vec![
+            campaign.manifest.authority_snapshot_id.clone(),
+            campaign.manifest_id.clone(),
+            head_snapshot_id.clone(),
+            payload.subject_id.clone(),
+            payload.prior_finding_set_id.clone(),
+            payload.prior_demand_set_id.clone(),
+        ];
+        round_refs.extend(subject.base_snapshot_id.clone());
+        round_refs.extend(subject.change_set_id.clone());
         batch.push(
             NewEvent::new(
                 EventType::RoundStartedV1,
@@ -755,14 +870,7 @@ fn capture_round(
             )
             .caused_by(old_event.event_id.clone())
             .correlating(subject_id.clone())
-            .referencing(vec![
-                campaign.manifest.authority_snapshot_id.clone(),
-                campaign.manifest_id.clone(),
-                head_snapshot_id.clone(),
-                payload.subject_id.clone(),
-                payload.prior_finding_set_id.clone(),
-                payload.prior_demand_set_id.clone(),
-            ]),
+            .referencing(round_refs),
         );
         store
             .append_batch(run_id, cas, &batch)
@@ -770,6 +878,16 @@ fn capture_round(
             .pop()
             .ok_or("supersession batch did not publish its replacement Round")?
     } else {
+        let mut round_refs = vec![
+            campaign.manifest.authority_snapshot_id.clone(),
+            campaign.manifest_id.clone(),
+            head_snapshot_id.clone(),
+            payload.subject_id.clone(),
+            payload.prior_finding_set_id.clone(),
+            payload.prior_demand_set_id.clone(),
+        ];
+        round_refs.extend(subject.base_snapshot_id.clone());
+        round_refs.extend(subject.change_set_id.clone());
         store
             .append(
                 run_id,
@@ -780,14 +898,7 @@ fn capture_round(
                 )
                 .caused_by(campaign.opened_event_id.clone())
                 .correlating(subject_id)
-                .referencing(vec![
-                    campaign.manifest.authority_snapshot_id.clone(),
-                    campaign.manifest_id.clone(),
-                    head_snapshot_id.clone(),
-                    payload.subject_id.clone(),
-                    payload.prior_finding_set_id.clone(),
-                    payload.prior_demand_set_id.clone(),
-                ]),
+                .referencing(round_refs),
             )
             .map_err(|error| error.to_string())?
     };
@@ -813,6 +924,24 @@ fn load_round(
     )
     .map_err(|error| error.to_string())?;
     subject.validate()?;
+    if subject.kind == SubjectKind::Diff {
+        let change_set: ChangeSetV1 = serde_json::from_value(
+            cas.get_json(
+                subject
+                    .change_set_id
+                    .as_deref()
+                    .ok_or("diff Subject has no Change Set ID")?,
+            )
+            .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        change_set.validate()?;
+        if change_set.base_snapshot_id != subject.base_snapshot_id.as_deref().unwrap_or_default()
+            || change_set.head_snapshot_id != subject.head_snapshot_id
+        {
+            return Err("ChangeSet@1 does not match the resumed Subject".into());
+        }
+    }
     let snapshot: SourceSnapshot = serde_json::from_value(
         cas.get_json(&subject.head_snapshot_id)
             .map_err(|error| error.to_string())?,

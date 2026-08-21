@@ -215,9 +215,9 @@ running from its root.
 
 | Section | What you set |
 |---|---|
-| `[subject]` | `kind = "whole-tree"` reviews the complete captured head. `kind = "diff"` is reserved for pipelines whose pinned Base and Change Set are available; kernels that cannot supply them refuse the run rather than silently reviewing a whole tree. Declaring this section requires pipeline format `version = 2`; version 1 remains readable as legacy `whole-tree`. |
+| `[subject]` | `kind = "whole-tree"` reviews the complete captured head. A `diff` pipeline requires generation to emit exactly one `review.kernel/ChangeSet@1`; every reviewer must declare a same-subject `change_set` input and receive that exact artifact from `generation.change_set`. Declaring this section requires pipeline format `version = 2`; version 1 remains readable as legacy `whole-tree`. |
 | `[[checks]]` | Gate programs. The program and every option are trusted literals from this file; a value derived from the change under review must be marked `untrusted` — it then can never occupy an option position (a leading `-` is refused, and the check records `not_run`, never "passed"). |
-| `[[nodes]]` / `[[edges]]` | The pipeline DAG. Adding a reviewer = one `[[nodes]]` entry (kind `reviewer`, `package = "<name>"`, `gated_by = "gate"`) plus edges wiring `gate.decision`, `generation.findings`, and its `result` into `gather`. Unknown fields, unwired inputs, and dangling edges are load-time fatal errors — a pipeline that is 90% valid is not 90% of a review. |
+| `[[nodes]]` / `[[edges]]` | The pipeline DAG. A diff reviewer needs `{ name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }`, plus edges wiring `gate.decision`, `generation.findings`, `generation.change_set`, and its `result` into `gather`. Missing exact Change Set wiring, unknown fields, unwired inputs, and dangling edges are load-time fatal errors. |
 | `[budgets]` | `unit = "tokens"` with `attempt` and `run` caps. Budgets reserve **before** dispatch — a dispatch that cannot reserve does not happen; exhaustion finishes in-flight attempts and closes the round as `Fail(Exhausted)` (exit 3). |
 | `[convergence]` | `clean_rounds` (quiet rounds required), `max_rounds` (then Exhausted — raising it is the owner's call), `gate` (`minor` / `major` / `blocker` — the minimum severity that blocks). |
 
@@ -246,7 +246,8 @@ lockfile on every test run, so forgetting to re-lock fails CI, not a live review
 | Flag | Meaning |
 |---|---|
 | `--campaign NAME` | Join a persistent ledger; the same name continues the pinned Campaign. Without it, `local` is the Campaign name. |
-| `--authority REV` | Required when opening a Campaign. Resolves the trusted Snapshot that supplies pipeline, lock, reviewer packages, and policy; never re-resolved on continuation. |
+| `--authority REV` | Required when opening a Campaign. Resolves the trusted Snapshot that supplies pipeline, lock, reviewer packages, and policy; never re-resolved on continuation. For `diff`, this Snapshot is also the Campaign's immutable Base, so use the integration branch or merge base such as `origin/main`, not `HEAD`. |
+| `--uncommitted` | Capture tracked and untracked-not-ignored worktree content behind a monitored two-pass boundary, then build an isolated synthetic Git head without writing candidate objects. Changed gitlinks and unsafe parent symlinks fail closed. |
 | `--restart-round` | Explicitly supersede an incomplete Round's immutable Subject and input sets with a newly captured head under the next epoch. |
 | `--focus "text"` | Pinned Campaign focus appended to every reviewer prompt; changing it requires a new Campaign. |
 | `--repo DIR` | Repo to review (default `.`). |
