@@ -12,10 +12,13 @@ executing attacker-chosen code with the operator's privileges, before any sandbo
 
 We decided to let git compute the diff, but to make the unsafe forms unrepresentable rather
 than merely disallowed. `SAFE_SUBCOMMANDS` stays closed. A new `Repo::tree_diff(base, head)`
-builds the entire argv itself from typed tree identifiers and calls a private unchecked
-runner. Tree-to-tree diff never reads the worktree, so the specific hole the test caught stays
-closed; and because no caller can supply a flag, a pathspec, or an operand that is not a
-resolved tree id, no caller can reach a worktree form either.
+builds the entire argv itself from typed tree identifiers and calls a private unchecked runner.
+The runner creates a fresh mode-0700 temporary bare administrative directory outside the
+checkout for each call and attaches only the resolved object database. It has no reusable
+state, worktree, index, replacement refs, or candidate attribute/configuration source.
+Tree-to-tree diff therefore reads neither the candidate worktree nor its local Git configuration;
+and because no caller can supply a flag, pathspec, or operand that is not a resolved tree id, no
+caller can reach a worktree form either.
 
 ## Considered options
 
@@ -55,6 +58,11 @@ resolved tree id, no caller can reach a worktree form either.
 - The tree identifiers `tree_diff` accepts must be constructible only from resolved revisions,
   never from a caller-supplied string — otherwise the operand position becomes an injection
   point and the typed method buys nothing.
+- The typed result carries `git version --build-options` and a kernel diff-policy version, and
+  uses a fixed rename-candidate limit. M2.4 records both with the Change Set so upstream behavior
+  and bounded rename work are visible rather than ambient. Binary-patch bytes also inherit the
+  linked deflate implementation; reproducibility is therefore scoped to the recorded Git build
+  and policy, not merely a semantic Git release number.
 - `hostile_git_config.rs` gains a case: a candidate-controlled `.gitattributes` selecting a
   `textconv` driver must not execute during a Change Set computation, and the resulting patch
   must equal a clean repository's for the same content.

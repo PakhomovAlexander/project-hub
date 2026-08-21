@@ -12,17 +12,20 @@
 //!    `GIT_ATTR_NOSYSTEM`, credential helpers and proxies cannot survive that.
 //! 2. Every invocation carries `-c` overrides that neutralize hooks, fsmonitor, filters,
 //!    external diff, CRLF translation and the attributes file.
-//! 3. Only plumbing that does not transform content is ever called — `ls-tree`, `cat-file`,
-//!    `ls-files`, `rev-parse`. Worktree bytes are read from the filesystem directly and hashed
-//!    here, never handed to git, so a clean filter has nothing to act on.
+//! 3. The generic runner admits only plumbing that does not transform content. The one exception
+//!    is [`Repo::tree_diff`]: it supplies two opaque, resolved tree ids and every option itself,
+//!    so neither a caller nor repository configuration can select a worktree diff.
 
 use std::ffi::OsStr;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 #[derive(Debug)]
 pub enum GitError {
     Spawn(std::io::Error),
+    Io(std::io::Error),
     /// git exited non-zero. stderr is carried because a capture failure must be diagnosable.
     Failed {
         args: Vec<String>,
@@ -33,12 +36,17 @@ pub enum GitError {
     UnsafeSubcommand {
         subcommand: String,
     },
+    /// Git's machine-readable tree-diff output violated the format requested by this adapter.
+    MalformedTreeDiff {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for GitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GitError::Spawn(e) => write!(f, "git could not be started: {e}"),
+            GitError::Io(e) => write!(f, "preparing isolated git execution: {e}"),
             GitError::Failed { args, stderr } => {
                 write!(f, "git {} failed: {}", args.join(" "), stderr.trim())
             }
@@ -47,6 +55,9 @@ impl std::fmt::Display for GitError {
                 f,
                 "refusing to run `git {subcommand}` during capture: it can apply candidate-controlled filters"
             ),
+            GitError::MalformedTreeDiff { detail } => {
+                write!(f, "git produced a malformed tree diff: {detail}")
+            }
         }
     }
 }
@@ -65,6 +76,61 @@ impl std::error::Error for GitError {}
 /// [`Repo::run_raw`] so a future edit cannot reintroduce the hole by reaching for the obvious
 /// command.
 pub const SAFE_SUBCOMMANDS: &[&str] = &["ls-tree", "cat-file", "ls-files", "rev-parse", "rev-list"];
+
+/// The kernel-owned policy whose output M2.4 records with each Change Set.
+pub const TREE_DIFF_POLICY_VERSION: &str =
+    "review.kernel/git-tree-diff@1;binary=git-deflate-level-6";
+
+/// A tree object id admitted by [`Repo::resolve_tree`].
+///
+/// The inner value is deliberately private: callers can select a revision, but cannot smuggle a
+/// flag, pathspec, or worktree operand into [`Repo::tree_diff`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeId(String);
+
+impl TreeId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Git's classification of one changed path record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeChangeKind {
+    Added,
+    Copied { similarity: u8 },
+    Deleted,
+    Modified,
+    Renamed { similarity: u8 },
+    TypeChanged,
+    Unmerged,
+    Unknown,
+    BrokenPair,
+}
+
+/// One parsed `--raw -z` record. Paths remain bytes because Git permits non-UTF-8 names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeChange {
+    pub kind: TreeChangeKind,
+    pub old_path: Option<Vec<u8>>,
+    pub new_path: Option<Vec<u8>>,
+}
+
+/// The configuration-neutral result of comparing two resolved Git trees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeDiff {
+    pub changes: Vec<TreeChange>,
+    pub git_version: String,
+    pub diff_policy: String,
+    output: Vec<u8>,
+    patch_start: usize,
+}
+
+impl TreeDiff {
+    pub fn patch(&self) -> &[u8] {
+        &self.output[self.patch_start..]
+    }
+}
 
 /// A repository we may only read.
 pub struct Repo {
@@ -92,10 +158,10 @@ impl Repo {
         &self.workdir
     }
 
-    /// Every environment variable git is given. The list is exhaustive by construction: the
-    /// environment is cleared first, so a variable absent here cannot reach git no matter what
-    /// launched the kernel. `GIT_EXTERNAL_DIFF`, `GIT_CONFIG_COUNT`, credential and proxy
-    /// settings are all inert for that reason rather than by being individually blocked.
+    /// Every inherited environment variable git is given. The list is exhaustive by
+    /// construction: the environment is cleared first, so a variable absent here cannot reach
+    /// git no matter what launched the kernel. The typed tree-diff path additionally supplies a
+    /// kernel-resolved `GIT_OBJECT_DIRECTORY`; it is authority, not inherited environment.
     pub const ENV_ALLOWLIST: &'static [&'static str] = &[
         "PATH",
         "HOME",
@@ -129,7 +195,19 @@ impl Repo {
             "-c",
             "core.attributesFile=/dev/null",
             "-c",
+            "core.quotePath=true",
+            "-c",
+            "core.bigFileThreshold=512m",
+            "-c",
+            "core.compression=6",
+            "-c",
+            "core.loosecompression=6",
+            "-c",
             "diff.external=",
+            "-c",
+            "diff.suppressBlankEmpty=false",
+            "-c",
+            "diff.renameLimit=1000",
             // No transport may be attempted; a submodule URL cannot become a fetch.
             "-c",
             "protocol.allow=never",
@@ -178,6 +256,101 @@ impl Repo {
         Ok(output)
     }
 
+    /// Run the one command that intentionally remains outside [`SAFE_SUBCOMMANDS`].
+    ///
+    /// This bypass is private and has exactly one call site, in [`Self::tree_diff`], where the
+    /// complete argv is built from constants and opaque [`TreeId`] values. It runs in a
+    /// kernel-owned bare administrative directory whose only candidate input is the resolved
+    /// object database. Keeping it separate from [`Self::run_raw`] prevents admitting
+    /// caller-controlled `git diff` forms globally.
+    fn run_tree_diff_unchecked<S: AsRef<OsStr>>(
+        &self,
+        args: &[S],
+    ) -> Result<(Output, String), GitError> {
+        let mut version_cmd = self.command();
+        version_cmd
+            .current_dir(&self.home)
+            .args(["version", "--build-options"]);
+        let version_output = version_cmd.output().map_err(GitError::Spawn)?;
+        if !version_output.status.success() {
+            return Err(GitError::Failed {
+                args: vec!["version".to_string(), "--build-options".to_string()],
+                stderr: String::from_utf8_lossy(&version_output.stderr).into_owned(),
+            });
+        }
+        let git_version = String::from_utf8(version_output.stdout)
+            .map_err(|_| GitError::NotUtf8)?
+            .trim()
+            .to_string();
+
+        let (administration, object_dir) = self.prepare_tree_diff_repository()?;
+        let git_dir = administration.path().join("repo.git");
+        let mut cmd = self.command();
+        cmd.current_dir(&self.home)
+            .arg("--git-dir")
+            .arg(git_dir)
+            .env("GIT_OBJECT_DIRECTORY", object_dir)
+            .env("GIT_NO_REPLACE_OBJECTS", "1");
+        cmd.args(args);
+        let output = cmd.output().map_err(GitError::Spawn)?;
+        if !output.status.success() {
+            return Err(GitError::Failed {
+                args: args
+                    .iter()
+                    .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+                    .collect(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        Ok((output, git_version))
+    }
+
+    fn prepare_tree_diff_repository(&self) -> Result<(tempfile::TempDir, PathBuf), GitError> {
+        let object_dir = PathBuf::from(self.line(&[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "objects",
+        ])?);
+        let object_format = self.line(&["rev-parse", "--show-object-format=storage"])?;
+        if !matches!(object_format.as_str(), "sha1" | "sha256") {
+            return Err(GitError::MalformedTreeDiff {
+                detail: format!("unsupported Git object format {object_format:?}"),
+            });
+        }
+
+        let administration = tempfile::Builder::new()
+            .prefix("review-kernel-tree-diff-")
+            .tempdir()
+            .map_err(GitError::Io)?;
+        let workdir = self.workdir.canonicalize().map_err(GitError::Io)?;
+        let admin_root = administration.path().canonicalize().map_err(GitError::Io)?;
+        if admin_root.starts_with(workdir) {
+            return Err(GitError::MalformedTreeDiff {
+                detail: "temporary tree-diff administration is inside the candidate checkout"
+                    .to_string(),
+            });
+        }
+        let git_dir = administration.path().join("repo.git");
+        fs::create_dir(&git_dir).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("objects")).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("refs")).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("refs/heads")).map_err(GitError::Io)?;
+        fs::create_dir(git_dir.join("info")).map_err(GitError::Io)?;
+        write_new(
+            &git_dir.join("HEAD"),
+            b"ref: refs/heads/review-kernel-unused\n",
+        )?;
+        let config = if object_format == "sha256" {
+            "[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tobjectformat = sha256\n"
+        } else {
+            "[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
+        };
+        write_new(&git_dir.join("config"), config.as_bytes())?;
+        write_new(&git_dir.join("info/attributes"), b"")?;
+        Ok((administration, object_dir))
+    }
+
     /// Raw stdout bytes — required for `-z` output, whose fields may not be UTF-8.
     pub fn bytes<S: AsRef<OsStr>>(&self, args: &[S]) -> Result<Vec<u8>, GitError> {
         Ok(self.run_raw(args)?.stdout)
@@ -192,7 +365,61 @@ impl Repo {
     }
 
     pub fn rev_parse(&self, rev: &str) -> Result<String, GitError> {
-        self.line(&["rev-parse", "--verify", &format!("{rev}^{{commit}}")])
+        self.line(&[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{rev}^{{commit}}"),
+        ])
+    }
+
+    /// Resolve a human-facing revision selector to an opaque tree object id.
+    pub fn resolve_tree(&self, rev: &str) -> Result<TreeId, GitError> {
+        let commit = self.rev_parse(rev)?;
+        let tree = self.line(&[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{commit}^{{tree}}"),
+        ])?;
+        if !matches!(tree.len(), 40 | 64) || !tree.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(GitError::MalformedTreeDiff {
+                detail: format!("resolved tree id is not a full object id: {tree:?}"),
+            });
+        }
+        Ok(TreeId(tree))
+    }
+
+    /// Compare two resolved trees without exposing Git's worktree-capable diff interface.
+    pub fn tree_diff(&self, base: &TreeId, head: &TreeId) -> Result<TreeDiff, GitError> {
+        let (output, git_version) = self.run_tree_diff_unchecked(&[
+            "diff",
+            "--patch-with-raw",
+            "-z",
+            "--no-abbrev",
+            "--full-index",
+            "--binary",
+            "--diff-algorithm=myers",
+            "--no-indent-heuristic",
+            "--find-renames=50%",
+            "--unified=3",
+            "--inter-hunk-context=0",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--line-prefix=",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--submodule=short",
+            "--ignore-submodules=none",
+            "-l1000",
+            "-O/dev/null",
+            base.as_str(),
+            head.as_str(),
+            "--",
+        ])?;
+        parse_tree_diff(output.stdout, git_version)
     }
 
     /// A sanitized git invocation the caller will stream, rather than capture whole.
@@ -240,10 +467,294 @@ impl Repo {
     }
 }
 
+fn parse_tree_diff(output: Vec<u8>, git_version: String) -> Result<TreeDiff, GitError> {
+    let mut rest = output.as_slice();
+    let mut changes = Vec::new();
+
+    while rest.first() == Some(&b':') {
+        let (header, after_header) = take_nul(rest, "raw header")?;
+        rest = after_header;
+        let header = std::str::from_utf8(header).map_err(|_| GitError::MalformedTreeDiff {
+            detail: "raw header was not ASCII".to_string(),
+        })?;
+        let fields: Vec<&str> = header.split_ascii_whitespace().collect();
+        if fields.len() != 5
+            || !fields[0].starts_with(':')
+            || fields[0].len() != 7
+            || fields[1].len() != 6
+            || !fields[0][1..]
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'7'))
+            || !fields[1].bytes().all(|byte| matches!(byte, b'0'..=b'7'))
+            || !is_full_object_id(fields[2])
+            || !is_full_object_id(fields[3])
+        {
+            return Err(GitError::MalformedTreeDiff {
+                detail: format!("unexpected raw header {header:?}"),
+            });
+        }
+
+        let status = fields[4];
+        let code =
+            status
+                .as_bytes()
+                .first()
+                .copied()
+                .ok_or_else(|| GitError::MalformedTreeDiff {
+                    detail: "raw status was empty".to_string(),
+                })?;
+        let kind = match code {
+            b'A' => TreeChangeKind::Added,
+            b'C' => TreeChangeKind::Copied {
+                similarity: parse_similarity(status)?,
+            },
+            b'D' => TreeChangeKind::Deleted,
+            b'M' => TreeChangeKind::Modified,
+            b'R' => TreeChangeKind::Renamed {
+                similarity: parse_similarity(status)?,
+            },
+            b'T' => TreeChangeKind::TypeChanged,
+            b'U' => TreeChangeKind::Unmerged,
+            b'X' => TreeChangeKind::Unknown,
+            b'B' => TreeChangeKind::BrokenPair,
+            _ => {
+                return Err(GitError::MalformedTreeDiff {
+                    detail: format!("unknown raw status {status:?}"),
+                });
+            }
+        };
+        if !matches!(code, b'C' | b'R') && status.len() != 1 {
+            return Err(GitError::MalformedTreeDiff {
+                detail: format!("unexpected score on raw status {status:?}"),
+            });
+        }
+
+        let (first_path, after_first) = take_nul(rest, "first path")?;
+        if first_path.is_empty() {
+            return Err(GitError::MalformedTreeDiff {
+                detail: "raw path was empty".to_string(),
+            });
+        }
+        rest = after_first;
+        let (old_path, new_path) = match kind {
+            TreeChangeKind::Added => (None, Some(first_path.to_vec())),
+            TreeChangeKind::Deleted => (Some(first_path.to_vec()), None),
+            TreeChangeKind::Copied { .. } | TreeChangeKind::Renamed { .. } => {
+                let (second_path, after_second) = take_nul(rest, "second path")?;
+                if second_path.is_empty() {
+                    return Err(GitError::MalformedTreeDiff {
+                        detail: "second raw path was empty".to_string(),
+                    });
+                }
+                rest = after_second;
+                (Some(first_path.to_vec()), Some(second_path.to_vec()))
+            }
+            _ => (Some(first_path.to_vec()), Some(first_path.to_vec())),
+        };
+        changes.push(TreeChange {
+            kind,
+            old_path,
+            new_path,
+        });
+    }
+
+    let mut patch_start = output.len() - rest.len();
+    if changes.is_empty() {
+        if !rest.is_empty() {
+            return Err(GitError::MalformedTreeDiff {
+                detail: "patch section appeared without raw changes".to_string(),
+            });
+        }
+    } else {
+        let Some((&separator, patch)) = rest.split_first() else {
+            return Err(GitError::MalformedTreeDiff {
+                detail: "raw changes had no patch section".to_string(),
+            });
+        };
+        if separator != 0 || !patch.starts_with(b"diff --git ") {
+            return Err(GitError::MalformedTreeDiff {
+                detail: "patch section did not follow the NUL separator with a git diff header"
+                    .to_string(),
+            });
+        }
+        let actual_headers: Vec<&[u8]> = patch
+            .split(|byte| *byte == b'\n')
+            .filter(|line| line.starts_with(b"diff --git "))
+            .collect();
+        let expected_headers = expected_patch_headers(&changes);
+        if actual_headers.len() != expected_headers.len()
+            || actual_headers
+                .iter()
+                .zip(&expected_headers)
+                .any(|(actual, expected)| *actual != expected.as_slice())
+        {
+            return Err(GitError::MalformedTreeDiff {
+                detail: format!(
+                    "raw changes disagree with patch headers ({} expected, {} present)",
+                    expected_headers.len(),
+                    actual_headers.len()
+                ),
+            });
+        }
+        patch_start += 1;
+    }
+
+    Ok(TreeDiff {
+        changes,
+        git_version,
+        diff_policy: TREE_DIFF_POLICY_VERSION.to_string(),
+        output,
+        patch_start,
+    })
+}
+
+fn take_nul<'a>(bytes: &'a [u8], field: &str) -> Result<(&'a [u8], &'a [u8]), GitError> {
+    let end =
+        bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(|| GitError::MalformedTreeDiff {
+                detail: format!("unterminated {field}"),
+            })?;
+    Ok((&bytes[..end], &bytes[end + 1..]))
+}
+
+fn parse_similarity(status: &str) -> Result<u8, GitError> {
+    let score = status[1..]
+        .parse::<u8>()
+        .map_err(|_| GitError::MalformedTreeDiff {
+            detail: format!("invalid similarity score in {status:?}"),
+        })?;
+    if score > 100 {
+        return Err(GitError::MalformedTreeDiff {
+            detail: format!("similarity score exceeds 100 in {status:?}"),
+        });
+    }
+    Ok(score)
+}
+
+fn is_full_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn expected_patch_headers(changes: &[TreeChange]) -> Vec<Vec<u8>> {
+    let mut headers = Vec::new();
+    for change in changes {
+        let old_path = change
+            .old_path
+            .as_deref()
+            .or(change.new_path.as_deref())
+            .expect("validated raw change has a path");
+        let new_path = change
+            .new_path
+            .as_deref()
+            .or(change.old_path.as_deref())
+            .expect("validated raw change has a path");
+        let mut header = b"diff --git ".to_vec();
+        header.extend_from_slice(&quote_patch_path(b"a/", old_path));
+        header.push(b' ');
+        header.extend_from_slice(&quote_patch_path(b"b/", new_path));
+        let copies = if matches!(change.kind, TreeChangeKind::TypeChanged) {
+            2
+        } else {
+            1
+        };
+        for _ in 0..copies {
+            headers.push(header.clone());
+        }
+    }
+    headers
+}
+
+fn quote_patch_path(prefix: &[u8], path: &[u8]) -> Vec<u8> {
+    let bytes: Vec<u8> = prefix.iter().chain(path).copied().collect();
+    let quoted = bytes
+        .iter()
+        .any(|byte| !matches!(byte, b' '..=b'~') || matches!(byte, b'"' | b'\\'));
+    if !quoted {
+        return bytes;
+    }
+    let mut output = Vec::with_capacity(bytes.len() + 2);
+    output.push(b'"');
+    for byte in bytes {
+        match byte {
+            7 => output.extend_from_slice(b"\\a"),
+            8 => output.extend_from_slice(b"\\b"),
+            b'\t' => output.extend_from_slice(b"\\t"),
+            b'\n' => output.extend_from_slice(b"\\n"),
+            11 => output.extend_from_slice(b"\\v"),
+            12 => output.extend_from_slice(b"\\f"),
+            b'\r' => output.extend_from_slice(b"\\r"),
+            b'"' => output.extend_from_slice(b"\\\""),
+            b'\\' => output.extend_from_slice(b"\\\\"),
+            b' '..=b'~' => output.push(byte),
+            _ => output.extend_from_slice(format!("\\{byte:03o}").as_bytes()),
+        }
+    }
+    output.push(b'"');
+    output
+}
+
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), GitError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(GitError::Io)?;
+    file.write_all(bytes).map_err(GitError::Io)
+}
+
 /// Split `-z` output into records without allocating a String — paths need not be UTF-8.
 pub fn split_nul(bytes: &[u8]) -> Vec<&[u8]> {
     bytes
         .split(|b| *b == 0)
         .filter(|record| !record.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_tree_diff;
+
+    const OID: &str = "0123456789012345678901234567890123456789";
+
+    fn raw(status: &str, paths: &[&str]) -> Vec<u8> {
+        let mut bytes = format!(":100644 100644 {OID} {OID} {status}").into_bytes();
+        bytes.push(0);
+        for path in paths {
+            bytes.extend_from_slice(path.as_bytes());
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    #[test]
+    fn malformed_combined_output_fails_closed() {
+        let mut raw_only = raw("M", &["file"]);
+        let mut malformed_mode = format!(":10064x 100644 {OID} {OID} M\0file\0").into_bytes();
+        malformed_mode.extend_from_slice(b"\0diff --git a/file b/file\n");
+        let cases = [
+            b"diff --git a/file b/file\n".to_vec(),
+            raw_only.clone(),
+            malformed_mode,
+            raw("M", &[""]),
+            raw("R100", &["old"]),
+            b"unexpected\0bytes".to_vec(),
+            {
+                let mut mismatch = raw("M", &["safe"]);
+                mismatch.extend_from_slice(b"\0diff --git a/hidden b/hidden\n");
+                mismatch
+            },
+        ];
+        for bytes in cases {
+            assert!(
+                parse_tree_diff(bytes, "git version test".to_string()).is_err(),
+                "malformed output was admitted"
+            );
+        }
+        raw_only.push(0);
+        raw_only.extend_from_slice(b"diff --git a/file b/file\n");
+        let parsed = parse_tree_diff(raw_only, "git version test".to_string()).unwrap();
+        assert_eq!(parsed.diff_policy, super::TREE_DIFF_POLICY_VERSION);
+    }
 }

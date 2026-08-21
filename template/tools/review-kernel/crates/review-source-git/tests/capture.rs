@@ -257,18 +257,51 @@ fn the_snapshot_payload_matches_source_snapshot_v1() {
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
 
-    for snapshot in [capture.committed("HEAD").unwrap(), capture.dirty().unwrap()] {
-        let payload = snapshot.to_payload("4b825dc642cb6eb9a060e54bf8d69288fbee4904", None);
-        if !validator.is_valid(&payload) {
-            let errors: Vec<String> = validator
-                .iter_errors(&payload)
-                .map(|e| format!("{} at {}", e, e.instance_path))
-                .collect();
-            panic!("payload rejected: {}", errors.join("; "));
-        }
-        let parsed: review_core::SourceSnapshot = serde_json::from_value(payload).unwrap();
-        assert!(!parsed.is_derived());
+    let snapshot = capture.committed("HEAD").unwrap();
+    let payload = snapshot.to_payload(None).unwrap();
+    if !validator.is_valid(&payload) {
+        let errors: Vec<String> = validator
+            .iter_errors(&payload)
+            .map(|e| format!("{} at {}", e, e.instance_path))
+            .collect();
+        panic!("payload rejected: {}", errors.join("; "));
     }
+    let parsed: review_core::SourceSnapshot = serde_json::from_value(payload).unwrap();
+    assert!(!parsed.is_derived());
+    assert!(
+        capture.dirty().unwrap().to_payload(None).is_err(),
+        "a dirty manifest must not be mislabeled with HEAD's committed tree id"
+    );
+}
+
+#[test]
+fn a_persisted_committed_tree_is_rehydrated_only_when_all_authority_agrees() {
+    let fixture = Fixture::new();
+    fixture.with_content();
+    fixture.commit_all("initial");
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let capture = Capture::new(&repo, &cas);
+    let snapshot = capture.committed("HEAD").unwrap();
+    let payload = snapshot.to_payload(None).unwrap();
+    let source: review_core::SourceSnapshot = serde_json::from_value(payload.clone()).unwrap();
+
+    assert_eq!(
+        capture
+            .rehydrate_committed(&source, &snapshot.manifest)
+            .unwrap(),
+        snapshot.tree_id.unwrap()
+    );
+
+    let mut contradictory = payload;
+    contradictory["capture"]["tree_id"] =
+        serde_json::json!("0000000000000000000000000000000000000000");
+    let source: review_core::SourceSnapshot = serde_json::from_value(contradictory).unwrap();
+    assert!(
+        capture
+            .rehydrate_committed(&source, &snapshot.manifest)
+            .is_err()
+    );
 }
 
 #[test]

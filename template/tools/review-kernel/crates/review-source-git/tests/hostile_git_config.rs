@@ -287,6 +287,116 @@ fn filtering_subcommands_are_refused_outright() {
     assert!(repo.text(&["rev-parse", "HEAD"]).is_ok());
 }
 
+/// Tree diff is a separate typed door: candidate attributes may select a configured textconv,
+/// but the adapter neither executes it nor lets hostile diff settings alter the patch.
+#[cfg(unix)]
+#[test]
+fn tree_diff_ignores_candidate_textconv_and_hostile_diff_configuration() {
+    fn history(fixture: &Fixture, attributes: bool) -> (String, String) {
+        plant_content(fixture);
+        fixture.write("caf\u{e9}.txt", b"before\n");
+        for index in 0..5 {
+            fixture.write(
+                &format!("old-{index}.txt"),
+                format!("shared line one\nshared line two\nunique {index}\n").as_bytes(),
+            );
+        }
+        if attributes {
+            fixture.write(".gitattributes", b"* diff=evil\n");
+        }
+        let base = fixture.commit_all("base");
+        fixture.write("src/main.rs", b"fn main() { println!(\"changed\"); }\n");
+        fixture.write("caf\u{e9}.txt", b"after\n");
+        for index in 0..5 {
+            fixture.git(&[
+                "mv",
+                &format!("old-{index}.txt"),
+                &format!("new-{index}.txt"),
+            ]);
+            fixture.write(
+                &format!("new-{index}.txt"),
+                format!("shared line one\nshared line two changed\nunique {index}\n").as_bytes(),
+            );
+        }
+        let head = fixture.commit_all("head");
+        (base, head)
+    }
+
+    let clean = Fixture::new();
+    let (clean_base, clean_head) = history(&clean, false);
+    let clean_repo = repo_of(&clean);
+    let clean_diff = clean_repo
+        .tree_diff(
+            &clean_repo.resolve_tree(&clean_base).unwrap(),
+            &clean_repo.resolve_tree(&clean_head).unwrap(),
+        )
+        .unwrap();
+
+    let hostile = Fixture::new();
+    let (hostile_base, hostile_head) = history(&hostile, true);
+    let marker = marker_path(hostile.dir.path());
+    let textconv = hostile.dir.path().join("evil-textconv.sh");
+    std::fs::write(
+        &textconv,
+        format!(
+            "#!/bin/sh\necho textconv-ran >> \"{}\"\ncat \"$1\"\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&textconv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    hostile.git(&["config", "diff.evil.textconv", textconv.to_str().unwrap()]);
+    hostile.git(&["config", "diff.algorithm", "histogram"]);
+    hostile.git(&["config", "diff.renames", "true"]);
+    hostile.git(&["config", "diff.renameLimit", "1"]);
+    hostile.git(&["config", "diff.suppressBlankEmpty", "true"]);
+    hostile.git(&["config", "diff.evil.binary", "true"]);
+    hostile.git(&["config", "diff.evil.xfuncname", "^hostile$"]);
+    hostile.git(&["config", "diff.mnemonicPrefix", "true"]);
+    hostile.git(&["config", "core.quotePath", "false"]);
+    hostile.git(&["config", "core.bigFileThreshold", "1"]);
+    hostile.git(&["config", "core.compression", "1"]);
+    hostile.git(&["config", "core.loosecompression", "1"]);
+    hostile.git(&["config", "color.ui", "always"]);
+
+    // Prove the fixture is armed, then clear the marker before entering the typed adapter.
+    hostile.git(&["diff", "--textconv", &hostile_base, &hostile_head, "--"]);
+    assert!(
+        marker.exists(),
+        "ordinary git diff did not execute textconv"
+    );
+    std::fs::remove_file(&marker).unwrap();
+
+    // The old implementation adopted this predictable directory. A fresh temporary admin root
+    // must ignore every planted attribute, replacement ref, and config symlink here.
+    let planted = hostile.home_path().join("review-kernel-tree-diff.git");
+    std::fs::create_dir_all(planted.join("info")).unwrap();
+    std::fs::create_dir_all(planted.join("refs/replace")).unwrap();
+    std::fs::write(planted.join("info/attributes"), "* -diff\n").unwrap();
+    std::fs::write(planted.join("refs/replace/planted"), "invalid\n").unwrap();
+    std::os::unix::fs::symlink(&marker, planted.join("config")).unwrap();
+
+    // A live attribute file is candidate-controlled but not one of the resolved tree inputs.
+    hostile.write(".gitattributes", b"*.rs -diff\n");
+
+    let hostile_repo = repo_of(&hostile);
+    let hostile_diff = hostile_repo
+        .tree_diff(
+            &hostile_repo.resolve_tree(&hostile_base).unwrap(),
+            &hostile_repo.resolve_tree(&hostile_head).unwrap(),
+        )
+        .unwrap();
+
+    assert!(!marker.exists(), "typed tree diff executed textconv");
+    assert_eq!(
+        hostile_diff, clean_diff,
+        "repository diff configuration changed the typed tree diff"
+    );
+}
+
 /// A weaponized repository where the marker would fire on a *single* filtering command, proving
 /// the boundary is what keeps it absent rather than luck about which commands git needs.
 #[test]
